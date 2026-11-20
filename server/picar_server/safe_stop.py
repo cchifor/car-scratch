@@ -13,9 +13,16 @@ MOTOR_CHANNELS = (4, 5)
 
 
 def zero_motors(bus) -> None:
+    """Both channels are attempted before a failure is raised."""
+    err = None
     for ch in MOTOR_CHANNELS:
-        for i in range(4):                           # ON_L, ON_H, OFF_L, OFF_H = 0
-            bus.write_byte_data(ADDR, LED0_ON_L + 4 * ch + i, 0)
+        try:
+            for i in range(4):                       # ON_L, ON_H, OFF_L, OFF_H = 0
+                bus.write_byte_data(ADDR, LED0_ON_L + 4 * ch + i, 0)
+        except OSError as e:
+            err = err or e
+    if err:
+        raise err
 
 
 def main(bus_factory=None) -> int:

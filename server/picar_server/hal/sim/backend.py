@@ -38,6 +38,7 @@ class SimBackend:
         self._lock = threading.Lock()
         self._duty = (0, 0)
         self._inhibit = False
+        self._stop_latched = False
         self._steer = 0.0
         self._v = 0.0
         self._coast_tau = 0.1
@@ -60,7 +61,10 @@ class SimBackend:
         right = max(-DUTY_MAX, min(DUTY_MAX, int(right)))
         with self._lock:
             ok = True
-            if self._inhibit and (left > 0 or right > 0):
+            if self._stop_latched:
+                left = right = 0
+                ok = False
+            elif self._inhibit and (left > 0 or right > 0):
                 left = right = 0
                 ok = False
             self._set_duty_locked((left, right))
@@ -82,6 +86,16 @@ class SimBackend:
     def clear_inhibit(self) -> None:
         with self._lock:
             self._inhibit = False
+
+    def latch_stop(self) -> bool:
+        with self._lock:
+            self._stop_latched = True
+            self._set_duty_locked((0, 0))
+        return True
+
+    def release_stop(self) -> None:
+        with self._lock:
+            self._stop_latched = False
 
     def motion(self) -> tuple[int, int]:
         with self._lock:

@@ -86,7 +86,9 @@ def static_response(root: Optional[Path], rel: str, request: web.Request) -> web
     if not _inside(base, target):
         raise web.HTTPNotFound()
     if target.is_dir():
-        target = target / "index.html"
+        target = (target / "index.html").resolve()
+        if not _inside(base, target):
+            raise web.HTTPNotFound()
     ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-cache"}
     gz = target.with_name(target.name + ".gz")

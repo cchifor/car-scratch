@@ -44,6 +44,7 @@ class _HardwareBase:
         self._motor_lock = threading.Lock()            # whole motor operations (outer)
         self._motion = (0, 0)                          # last applied signed duty (left, right)
         self._inhibit = False                          # forward inhibit latch
+        self._stop_latched = False                     # full stop latch: every write becomes zero
         self._on_sample: Optional[OnSample] = None
         self._deadline_probe: Optional[Callable[[], tuple[bool, bool]]] = None
         self._latch_cb: Optional[Callable[[str], None]] = None
@@ -61,7 +62,7 @@ class _HardwareBase:
         self.bus, self.gpio = bus, gpio
         self.pca = PCA9685(bus, self.lock, sleep=self.clock.sleep)
         self.hub = SensorHub(bus, gpio, self.lock, self.clock, self.motion,
-                             lambda: bool(self.cal.get("line_enabled", False)))
+                             lambda: bool(self.cal.get("line_enabled", False)), motor_lock=self._motor_lock)
 
     # -- hooks ------------------------------------------------------------------------------------------
     def _write_motors(self, left: int, right: int) -> None:
@@ -78,19 +79,27 @@ class _HardwareBase:
         """False when forward duty was replaced by zero because the inhibit is latched."""
         left = max(-DUTY_MAX, min(DUTY_MAX, int(left)))
         right = max(-DUTY_MAX, min(DUTY_MAX, int(right)))
-        with self._motor_lock:
+        if not self._motor_lock.acquire(timeout=STOP_LOCK_TIMEOUT_S):   # e.g. a stalled sensor probe
+            raise HardwareFault("motor lock timeout")
+        try:
             refused = False
-            if self._inhibit and (left > 0 or right > 0):
+            if self._stop_latched:
+                left, right, refused = 0, 0, True
+            elif self._inhibit and (left > 0 or right > 0):
                 left, right, refused = min(left, 0), min(right, 0), True
             try:
                 self._write_motors(left, right)
             except Exception as e:                     # noqa: BLE001 - any failed write is a hardware fault
-                self._zero_channels()                  # best effort
-                self._motion = (0, 0)
+                if self._zero_channels():
+                    self._motion = (0, 0)
+                elif (left, right) != (0, 0):
+                    self._motion = (left, right)       # unconfirmed zero: stay non-zero so the stop is retried
                 if isinstance(e, HardwareFault):
                     raise
                 raise HardwareFault(f"motor write failed: {e}") from e
             self._motion = (left, right)
+        finally:
+            self._motor_lock.release()
         return not refused
 
     def stop_motors(self) -> bool:
@@ -119,6 +128,20 @@ class _HardwareBase:
     def clear_inhibit(self) -> None:
         self._inhibit = False
 
+    def latch_stop(self) -> bool:
+        """Latch the full stop and make sure the motors are off; True when they are confirmed off."""
+        self._stop_latched = True                      # seen by any set_motors that has not taken the lock yet
+        if not self._motor_lock.acquire(timeout=STOP_LOCK_TIMEOUT_S):
+            return False
+        try:
+            moving = self._motion != (0, 0)            # a set_motors in flight has finished: the lock is ours
+        finally:
+            self._motor_lock.release()
+        return self.stop_motors() if moving else True
+
+    def release_stop(self) -> None:
+        self._stop_latched = False
+
     # -- sensing ----------------------------------------------------------------------------------------
     def capabilities(self) -> dict[str, bool]:
         return self.hub.capabilities()
@@ -134,7 +157,8 @@ class _HardwareBase:
         self._deadline_probe = fn
 
     def set_latch_callback(self, cb: Optional[Callable[[str], None]]) -> None:
-        """cb(reason) is called from the sensor thread after a deadline stop."""
+        """cb(reason) is called from the sensor thread after a deadline stop; reason "stop_failed" when the
+        stop could not be confirmed."""
         self._latch_cb = cb
 
     def start(self, on_sample: OnSample) -> None:
@@ -153,9 +177,9 @@ class _HardwareBase:
         reason = None if loop_ok and controller_ok else ("loop_stalled" if not loop_ok else "controller_silent")
         if reason:
             log.error("deadline missed (%s) while moving: stopping", reason)
-            self.stop_motors()
+            stopped = self.stop_motors()
             if self._latch_cb:
-                self._latch_cb(reason)
+                self._latch_cb(reason if stopped else "stop_failed")
 
     def _run(self) -> None:
         self._old_switch = sys.getswitchinterval()
@@ -213,8 +237,15 @@ class RealBackend(_HardwareBase):
         self.set_steering(0.0)
 
     def _zero_pwm(self) -> None:
-        self.pca.set_pwm_retry(MOTOR_RIGHT_CH, 0)
-        self.pca.set_pwm_retry(MOTOR_LEFT_CH, 0)
+        """Both channels are attempted (each with retries) before a failure is reported."""
+        err = None
+        for ch in (MOTOR_RIGHT_CH, MOTOR_LEFT_CH):
+            try:
+                self.pca.set_pwm_retry(ch, 0)
+            except Exception as e:                     # noqa: BLE001
+                err = err or e
+        if err:
+            raise err
 
     def _write_motors(self, left: int, right: int) -> None:
         g = self.gpio

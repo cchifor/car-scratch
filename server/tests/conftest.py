@@ -31,6 +31,7 @@ class FakeBackend:
     def __init__(self):
         self.duty = (0, 0)
         self.inhibit = False
+        self.stop_latched = False
         self.sets = []
         self.fail_sets = 0
         self.stop_result = True
@@ -50,6 +51,9 @@ class FakeBackend:
         if self.fail_sets > 0:
             self.fail_sets -= 1
             raise HardwareFault("i2c")
+        if self.stop_latched:
+            self.duty = (0, 0)
+            return False
         if self.inhibit and (left > 0 or right > 0):
             self.duty = (0, 0)
             return False
@@ -70,6 +74,14 @@ class FakeBackend:
 
     def clear_inhibit(self):
         self.inhibit = False
+
+    def latch_stop(self):
+        self.stop_latched = True
+        self.duty = (0, 0)
+        return True
+
+    def release_stop(self):
+        self.stop_latched = False
 
     def motion(self):
         return self.duty

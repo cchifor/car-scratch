@@ -344,10 +344,10 @@ async def test_motor_write_failing_twice_latches_hw_fault(rig):
     assert rig.ctl.hw_fault is None
 
 
-def test_single_motor_write_failure_is_retried(rig):
-    rig.backend.fail_sets = 1
-    assert rig.cmd("drive", dir="forward", speed=30)
-    assert rig.ctl.hw_fault is None
+def test_single_motor_write_failure_is_terminal(rig):
+    rig.backend.fail_sets = 1   # the HAL already retried; the controller does not retry again
+    assert code(rig, "drive", dir="forward", speed=30) == "hw_fault"
+    assert rig.ctl.hw_fault
 
 
 def test_stop_motors_false_latches_hw_fault_and_reset_needs_a_good_zero_write(rig):

@@ -82,6 +82,15 @@ class Backend(Protocol):
         """Release the forward inhibit (only the guard's clear condition calls this)."""
         ...
 
+    def latch_stop(self) -> bool:
+        """Latch the full stop (any thread): the motors are zeroed and, until release_stop(), set_motors()
+        writes zero and returns False. True when the motors are confirmed off."""
+        ...
+
+    def release_stop(self) -> None:
+        """Release the full stop latch (resume / estop_reset, once no stop condition remains)."""
+        ...
+
     def motion(self) -> tuple[int, int]:
         """Thread-safe snapshot of the last applied (left, right) signed duty."""
         ...

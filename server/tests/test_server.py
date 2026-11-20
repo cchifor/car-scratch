@@ -589,7 +589,10 @@ async def test_projects_size_cap_and_quota(srv, tmp_path):
             store.put(f"p{n}", sb3)
             n += 1
     assert e.value.status == 413 and store.used() <= 4000
-    store.put("a", sb3)                                             # an overwrite fits within the quota
+    with pytest.raises(StoreError):                                 # an overwrite keeps a .bak, which counts
+        store.put("a", sb3)
+    store.delete("p0")
+    store.put("a", sb3)                                             # freed space takes the overwrite
 
 
 async def test_projects_unsafe_methods_check_origin_and_host(srv):

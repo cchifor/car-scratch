@@ -25,6 +25,7 @@ FAR = 999.0
 FAULT_AFTER = 3                  # consecutive "none" samples
 DEFAULT_NEAR_HINT_CM = 60.0
 LINE_BACKOFF_S = (2.0, 10.0)     # re-probe delay: starts at 2 s, doubles up to 10 s
+LINE_LOCK_TIMEOUT_S = 0.05        # a line probe waits this long for the motor lock, else it skips the sample
 
 
 class SystemClock:
@@ -83,7 +84,8 @@ class SensorHub:
     """Produces one `Sample` per `read()`. `motion()` is the backend's applied (left, right) duty."""
 
     def __init__(self, bus, gpio, lock, clock, motion: Callable[[], tuple[int, int]],
-                 line_enabled: Callable[[], bool] = lambda: False, us_pin: int = US_PIN):
+                 line_enabled: Callable[[], bool] = lambda: False, us_pin: int = US_PIN, motor_lock=None):
+        self.motor_lock = motor_lock               # outer lock: held across "motors stopped?" and the line probe
         self.bus, self.lock, self.clock, self.motion, self.line_enabled = bus, lock, clock, motion, line_enabled
         self.us = Ultrasonic(gpio, clock, us_pin)
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
@@ -144,11 +146,23 @@ class SensorHub:
     # -- line follower ----------------------------------------------------------------------------------
     def _read_line(self) -> Optional[list[int]]:
         """Only when enabled in calibration and the motors are stopped (an I2C stall must not overlap motion)."""
-        if not self.line_enabled() or self._moving():
+        if not self.line_enabled():
             return None
         now = self.clock.monotonic()
         if not self.line_ok and now < self._line_next_probe:
             return None
+        held = self.motor_lock is not None and self.motor_lock.acquire(timeout=LINE_LOCK_TIMEOUT_S)
+        if self.motor_lock is not None and not held:
+            return None
+        try:
+            if self._moving():
+                return None
+            return self._probe_line(now)
+        finally:
+            if held:
+                self.motor_lock.release()
+
+    def _probe_line(self, now: float) -> Optional[list[int]]:
         try:
             with self.lock:
                 raw = self.bus.read_i2c_block_data(LINE_ADDR, 0, 10)

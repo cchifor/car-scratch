@@ -5,12 +5,14 @@ import asyncio
 import io
 import os
 import re
+import tempfile
+import threading
 import zipfile
 from pathlib import Path
 
 from aiohttp import web
 
-NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+NAME_RE = re.compile(r"[A-Za-z0-9 _-]{1,64}")
 MAX_FILE = 25 * 1024 * 1024
 QUOTA = 500 * 1024 * 1024
 SUFFIX = ".sb3"
@@ -25,9 +27,10 @@ class StoreError(Exception):
 class ProjectStore:
     def __init__(self, root, quota: int = QUOTA, max_file: int = MAX_FILE):
         self.root, self.quota, self.max_file = Path(root), quota, max_file
+        self._lock = threading.Lock()         # serialises the quota check and the commit
 
     def path(self, name: str) -> Path:
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             raise StoreError(400, "invalid project name")
         return self.root / (name + SUFFIX)
 
@@ -36,7 +39,7 @@ class ProjectStore:
         if self.root.is_dir():
             for p in sorted(self.root.glob("*" + SUFFIX)):
                 name = p.name[: -len(SUFFIX)]
-                if NAME_RE.match(name):
+                if NAME_RE.fullmatch(name):
                     st = p.stat()
                     out.append({"name": name, "size": st.st_size, "mtime": int(st.st_mtime)})
         return out
@@ -54,26 +57,38 @@ class ProjectStore:
                     raise StoreError(400, "not an sb3 project (no project.json)")
         except zipfile.BadZipFile:
             raise StoreError(400, "not a zip file")
+        with self._lock:
+            return self._commit(name, path, data)
+
+    def _commit(self, name: str, path: Path, data: bytes) -> dict:
         self.root.mkdir(parents=True, exist_ok=True)
-        old = path.stat().st_size if path.exists() else 0
-        if self.used() - old + len(data) > self.quota:
+        bak = path.with_name(path.name + ".bak")
+        # After the commit the old file becomes the .bak and the previous .bak is gone.
+        old_bak = bak.stat().st_size if bak.exists() else 0
+        if self.used() - old_bak + len(data) > self.quota:
             raise StoreError(413, "project storage is full")
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        if path.exists():
-            os.replace(path, path.with_name(path.name + ".bak"))
-        os.replace(tmp, path)
+        fd, tmp = tempfile.mkstemp(dir=self.root, prefix=path.name + ".", suffix=".tmp")   # unique per PUT
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            if path.exists():
+                os.replace(path, bak)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
         st = path.stat()
         return {"name": name, "size": st.st_size, "mtime": int(st.st_mtime)}
 
     def delete(self, name: str) -> None:
         path = self.path(name)
-        if not path.exists():
-            raise StoreError(404, "no such project")
-        path.unlink()
+        with self._lock:
+            if not path.exists():
+                raise StoreError(404, "no such project")
+            path.unlink()
+            path.with_name(path.name + ".bak").unlink(missing_ok=True)
 
 
 def _name_from(request: web.Request) -> str:
@@ -84,6 +99,7 @@ def _name_from(request: web.Request) -> str:
 
 
 def add_routes(app: web.Application, store: ProjectStore) -> None:
+    put_slots = asyncio.Semaphore(2)   # at most two request bodies buffered at once
     loop_run = lambda fn, *a: asyncio.get_running_loop().run_in_executor(None, fn, *a)  # noqa: E731
 
     def guard(request: web.Request) -> None:
@@ -112,12 +128,13 @@ def add_routes(app: web.Application, store: ProjectStore) -> None:
             store.path(name)
             if request.content_length is not None and request.content_length > store.max_file:
                 raise StoreError(413, "project is larger than 25 MB")
-            buf = bytearray()
-            async for chunk in request.content.iter_chunked(1 << 16):
-                buf += chunk
-                if len(buf) > store.max_file:
-                    raise StoreError(413, "project is larger than 25 MB")
-            return web.json_response(await loop_run(store.put, name, bytes(buf)))
+            async with put_slots:
+                buf = bytearray()
+                async for chunk in request.content.iter_chunked(1 << 16):
+                    buf += chunk
+                    if len(buf) > store.max_file:
+                        raise StoreError(413, "project is larger than 25 MB")
+                return web.json_response(await loop_run(store.put, name, bytes(buf)))
         except StoreError as e:
             return fail(e)
 

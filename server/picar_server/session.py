@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 MAX_SIMS = 4
 MAX_QUEUE = 512
+RATE_EXEMPT_OPS = ("stop", "estop", "pause")   # safety commands are never rate limited
 
 
 @dataclass
@@ -328,19 +329,20 @@ class Session:
         """Returns False to end the session."""
         if not self.ready:
             return await self._on_hello(text)
-        if not self.bucket.allow():
-            if '"stop"' not in text and '"estop"' not in text:
-                self.err("rate_limited", "too many frames")
-                return True
         try:
             msg = protocol.parse_frame(text)
             t = msg["t"]
+            if not self.bucket.allow() and not (t == "cmd" and msg.get("op") in RATE_EXEMPT_OPS):
+                cid = msg.get("id")
+                self.err("rate_limited", "too many frames",
+                         cid if t == "cmd" and isinstance(cid, int) and not isinstance(cid, bool) else None)
+                return True
             if t == "hb":
                 self._accept()
             elif t == "cmd":
                 cid, op, f = protocol.validate_cmd(msg)
-                self._accept(op)
-                self._cmd(cid, op, f)
+                if self._cmd(cid, op, f):   # only an accepted command feeds the watchdog
+                    self._accept(op)
             elif t == "control":
                 action, force = protocol.validate_control(msg)
                 self._accept()
@@ -391,7 +393,7 @@ class Session:
             if err:
                 mode = "car"
         if mode == "car":
-            self._enter_car(dup)
+            self._enter_car(dup, take=not err)   # a failed sim request never takes control of the car
         self.ready = True
         if err:
             self.send(err)
@@ -410,9 +412,9 @@ class Session:
         self.mode, self.role = "sim", "controller"
         return None
 
-    def _enter_car(self, dup: bool) -> None:
+    def _enter_car(self, dup: bool, take: bool = True) -> None:
         self.mode, self.role = "car", "viewer"
-        if self.want == "control" and not dup:
+        if self.want == "control" and not dup and take:
             self.hub.take(self)
 
     def _control(self, action: str, force: bool) -> None:
@@ -436,13 +438,13 @@ class Session:
             self._enter_car(dup)
         else:
             if self.mode == "car":
-                hub.release(self)
                 try:
                     load_world(world or DEFAULT_WORLD, hub.world_dir)
                 except (KeyError, WorldError):
                     return self.err("bad_request", "unknown world")
                 if hub.sim_count() >= hub.max_sims:
                     return self.err("sim_busy", f"at most {hub.max_sims} simulator sessions")
+                hub.release(self)
                 self._enter_sim(world)
             else:
                 self.sim.stop_for_transition()
@@ -454,31 +456,39 @@ class Session:
         self._announce()
 
     # ---- commands -------------------------------------------------------------------------------------------
-    def _cmd(self, cid: int, op: str, f: dict) -> None:
+    def _cmd(self, cid: int, op: str, f: dict) -> bool:
+        """Runs one command; True when it was acked (an err reply returns False)."""
         hub = self.hub
         if self.mode == "car" and hub.controller is not self and op != "estop":
-            return self.err("not_controller", "only the controller can send this", cid)
+            self.err("not_controller", "only the controller can send this", cid)
+            return False
         if op == "estop":
             by = "controller" if hub.controller is self else "viewer"
             hub.estop(self, by)
-            return self.send({"t": "ack", "id": cid, "ok": True})
+            self.send({"t": "ack", "id": cid, "ok": True})
+            return True
         if op == "world":
             if self.mode != "sim":
-                return self.err("sim_only", "world applies to the simulator", cid)
+                self.err("sim_only", "world applies to the simulator", cid)
+                return False
             try:
                 world = load_world(f["world"], hub.world_dir)
             except (KeyError, WorldError):
-                return self.err("bad_request", "unknown world", cid)
+                self.err("bad_request", "unknown world", cid)
+                return False
             self.sim.stop_for_transition()
             self.sim.backend.set_world(world)
             self.world_id = world.id
             self.send({"t": "ack", "id": cid, "ok": True})
-            return self._send_world()
+            self._send_world()
+            return True
         try:
             extra = self.ctl.command(op, f, owner=self, cmd_id=cid)
         except CmdError as e:
-            return self.err(e.code, e.msg, cid)
+            self.err(e.code, e.msg, cid)
+            return False
         self.send({"t": "ack", "id": cid, "ok": True, **extra})
+        return True
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:

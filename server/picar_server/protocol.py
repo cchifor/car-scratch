@@ -36,7 +36,7 @@ LIMITS = {
 # Viewers may send only these (cmd ops are checked separately: only `estop`).
 VIEWER_TYPES = {"hb", "control", "mode", "hello"}
 
-_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 class ProtocolError(Exception):
@@ -86,7 +86,7 @@ def _world_id(msg: dict, key: str = "world") -> Optional[str]:
     w = msg.get(key)
     if w is None:
         return None
-    if not isinstance(w, str) or not _ID_RE.match(w):
+    if not isinstance(w, str) or not _ID_RE.fullmatch(w):
         raise ProtocolError("bad_request", "invalid world id", msg.get("id") if isinstance(msg.get("id"), int) else None)
     return w
 
@@ -125,7 +125,7 @@ def validate_cmd(msg: dict) -> tuple[int, str, dict]:
             f["speed_limit"] = int(round(safety.clamp(_num(msg, "speed_limit", cid), 1, safety.SPEED_MAX)))
     elif op == "world":
         w = msg.get("world", msg.get("world_id"))
-        if not isinstance(w, str) or not _ID_RE.match(w):
+        if not isinstance(w, str) or not _ID_RE.fullmatch(w):
             raise ProtocolError("bad_request", "world must be a world id string", cid)
         f["world"] = w
     elif op == "calibrate":

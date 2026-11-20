@@ -10,7 +10,7 @@ from typing import Optional, Sequence
 
 WORLD_DIR = Path(__file__).with_name("worlds")
 DEFAULT_WORLD = "arena"
-_ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+_ID_RE = re.compile(r"[a-z0-9_-]{1,32}")
 
 Wall = tuple[float, float, float, float]
 
@@ -44,7 +44,7 @@ def validate_world(data) -> World:
     if not isinstance(data, dict):
         raise WorldError("world must be an object")
     wid = data.get("id")
-    if not isinstance(wid, str) or not _ID_RE.match(wid):
+    if not isinstance(wid, str) or not _ID_RE.fullmatch(wid):
         raise WorldError("bad world id")
     title = data.get("title", wid)
     if not isinstance(title, str):
@@ -81,7 +81,7 @@ def validate_world(data) -> World:
 
 def load_world(world_id: str, directory: Path = WORLD_DIR) -> World:
     """Raises KeyError for an unknown id, WorldError for an invalid file."""
-    if not _ID_RE.match(world_id or ""):
+    if not _ID_RE.fullmatch(world_id or ""):
         raise KeyError(world_id)
     path = Path(directory) / f"{world_id}.json"
     try:
