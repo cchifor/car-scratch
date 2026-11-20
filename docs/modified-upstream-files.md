@@ -1,0 +1,97 @@
+# Modified upstream files
+
+Files under `editor/` changed by Car Scratch relative to the imported upstream snapshot
+(scratch-editor @ 105e22ea3ff935f2e4aa3d0b3b26f661e98d298a, imported in commit 4c31b51), as required by
+AGPL-3.0 §5(a). All changes are dated 2026-11-20 unless git history says otherwise.
+Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = added, D = deleted.
+
+| Status | File |
+|---|---|
+| A | `editor/packages/scratch-gui/src/components/car-info-modal/car-info-modal.css` |
+| A | `editor/packages/scratch-gui/src/components/car-info-modal/car-info-modal.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-info-modal/messages.js` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/car-monitor.css` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/car-monitor.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/car-renderer.js` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/draw-scene.js` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/estop-button.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/messages.js` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/monitor-banners.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/monitor-canvas.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/monitor-flags.js` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/rotate-hint.css` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/rotate-hint.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/status-chip.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-projects-modal/car-projects-modal.css` |
+| A | `editor/packages/scratch-gui/src/components/car-projects-modal/car-projects-modal.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-projects-modal/car-projects-panels.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-projects-modal/messages.js` |
+| M | `editor/packages/scratch-gui/src/components/green-flag/green-flag.css` |
+| M | `editor/packages/scratch-gui/src/components/gui/gui.jsx` |
+| M | `editor/packages/scratch-gui/src/components/menu-bar/about-menu.css` |
+| M | `editor/packages/scratch-gui/src/components/menu-bar/about-menu.jsx` |
+| A | `editor/packages/scratch-gui/src/components/menu-bar/car-scratch-logo.svg` |
+| A | `editor/packages/scratch-gui/src/components/menu-bar/examples-menu.jsx` |
+| M | `editor/packages/scratch-gui/src/components/menu-bar/file-menu.jsx` |
+| M | `editor/packages/scratch-gui/src/components/menu-bar/menu-bar.css` |
+| M | `editor/packages/scratch-gui/src/components/menu-bar/menu-bar.jsx` |
+| M | `editor/packages/scratch-gui/src/components/menu/menu.css` |
+| M | `editor/packages/scratch-gui/src/components/stage-header/stage-header.css` |
+| A | `editor/packages/scratch-gui/src/components/stage-pane-tabs/stage-pane-tabs.css` |
+| A | `editor/packages/scratch-gui/src/components/stage-pane-tabs/stage-pane-tabs.jsx` |
+| M | `editor/packages/scratch-gui/src/components/stage-wrapper/stage-wrapper.jsx` |
+| M | `editor/packages/scratch-gui/src/components/stop-all/stop-all.css` |
+| A | `editor/packages/scratch-gui/src/containers/car-estop.jsx` |
+| A | `editor/packages/scratch-gui/src/containers/car-monitor.jsx` |
+| A | `editor/packages/scratch-gui/src/containers/picar-global.jsx` |
+| D | `editor/packages/scratch-gui/src/lib/default-project/0fb9be3e8397c983338cb71dc84d0b25.svg` |
+| D | `editor/packages/scratch-gui/src/lib/default-project/bcf454acf82e4504149f7ffe07081dbc.svg` |
+| A | `editor/packages/scratch-gui/src/lib/default-project/ca638974c72dcdf2b039ea6d16e1b35b.svg` |
+| M | `editor/packages/scratch-gui/src/lib/default-project/index.ts` |
+| M | `editor/packages/scratch-gui/src/lib/default-project/project-data.ts` |
+| M | `editor/packages/scratch-gui/src/lib/libraries/extensions/index.jsx` |
+| A | `editor/packages/scratch-gui/src/lib/libraries/extensions/picar/picar-illustration.svg` |
+| A | `editor/packages/scratch-gui/src/lib/libraries/extensions/picar/picar-small.svg` |
+| A | `editor/packages/scratch-gui/src/lib/libraries/extensions/picar/picar.png` |
+| A | `editor/packages/scratch-gui/src/lib/picar/about-events.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/audio-unlock.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/examples-api.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/load-project-buffer.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/projects-api.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/storage.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/use-car-link.js` |
+| M | `editor/packages/scratch-gui/src/lib/titled-hoc.jsx` |
+| M | `editor/packages/scratch-gui/src/lib/vm-manager-hoc.jsx` |
+| M | `editor/packages/scratch-gui/src/playground/index.ejs` |
+| M | `editor/packages/scratch-gui/src/playground/render-gui.jsx` |
+| M | `editor/packages/scratch-gui/src/reducers/modals.js` |
+| A | `editor/packages/scratch-gui/static/car-scratch/apple-touch-icon.png` |
+| A | `editor/packages/scratch-gui/static/car-scratch/block-icon.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/car-icon-maskable.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/car-icon.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/car-scratch-logo.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/car-sprite.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/connection-icon.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/favicon-32.png` |
+| A | `editor/packages/scratch-gui/static/car-scratch/icon-192.png` |
+| A | `editor/packages/scratch-gui/static/car-scratch/icon-512-maskable.png` |
+| A | `editor/packages/scratch-gui/static/car-scratch/icon-512.png` |
+| A | `editor/packages/scratch-gui/static/car-scratch/library-tile.png` |
+| A | `editor/packages/scratch-gui/static/car-scratch/library-tile.svg` |
+| A | `editor/packages/scratch-gui/static/car-scratch/manifest.webmanifest` |
+| M | `editor/packages/scratch-gui/test/integration/menu-bar.test.js` |
+| M | `editor/packages/scratch-gui/test/integration/project-state.test.js` |
+| A | `editor/packages/scratch-gui/test/unit/picar/car-monitor.test.jsx` |
+| A | `editor/packages/scratch-gui/test/unit/picar/car-projects.test.jsx` |
+| A | `editor/packages/scratch-gui/test/unit/picar/car-renderer.test.js` |
+| A | `editor/packages/scratch-gui/test/unit/picar/examples-menu.test.jsx` |
+| A | `editor/packages/scratch-gui/test/unit/picar/mock-link.js` |
+| M | `editor/packages/scratch-gui/webpack.config.js` |
+| M | `editor/packages/scratch-vm/src/extension-support/extension-manager.js` |
+| A | `editor/packages/scratch-vm/src/extensions/scratch3_picar/car-link.js` |
+| A | `editor/packages/scratch-vm/src/extensions/scratch3_picar/index.js` |
+| A | `editor/packages/scratch-vm/src/extensions/scratch3_picar/protocol.js` |
+| A | `editor/packages/scratch-vm/test/fixtures/picar/fakes.js` |
+| A | `editor/packages/scratch-vm/test/unit/extension_picar.js` |
+| A | `editor/packages/scratch-vm/test/unit/extension_picar_carlink.js` |
+| A | `editor/packages/scratch-vm/test/unit/extension_picar_examples.js` |
