@@ -223,7 +223,18 @@ def test_shared_car_starts_on_hold_and_boot_hold_survives_a_new_controller():
     assert r.cmd("drive", dir="forward", speed=30)
 
 
-def test_disconnect_latches_hold_and_new_controller_clears_it_but_lease_holder_keeps_it(rig):
+def test_every_acquisition_of_control_starts_on_hold_and_only_resume_clears_it(rig):
+    assert not rig.ctl.hold
+    rig.ctl.new_controller(returning=False)            # a take / mode->car on a car that is not on hold
+    assert rig.ctl.hold and rig.ctl.hold_reason == "control"
+    assert code(rig, "drive", dir="forward", speed=30) == "hold"
+    rig.cmd("resume")
+    assert not rig.ctl.hold and rig.cmd("drive", dir="forward", speed=30)
+    rig.ctl.new_controller(returning=True)             # a returning lease holder too, and the car stops
+    assert rig.ctl.hold and rig.backend.duty == (0, 0)
+
+
+def test_disconnect_latches_hold_and_every_new_controller_keeps_it_until_resume(rig):
     rig.cmd("drive", dir="forward", speed=30)
     rig.ctl.controller_lost()
     assert rig.backend.duty == (0, 0) and rig.ctl.hold and not rig.ctl.attached
@@ -231,7 +242,7 @@ def test_disconnect_latches_hold_and_new_controller_clears_it_but_lease_holder_k
     assert rig.ctl.hold
     rig.ctl.controller_lost()
     rig.ctl.new_controller(returning=False)
-    assert not rig.ctl.hold
+    assert rig.ctl.hold
 
 
 def test_new_controller_resets_config_but_estop_persists(rig):

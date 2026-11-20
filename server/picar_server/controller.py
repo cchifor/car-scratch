@@ -30,6 +30,9 @@ class CmdError(Exception):
         self.code, self.msg = code, msg or code
 
 
+_ANY = object()   # _defer target: "whatever move is current when the loop drains" (loop-thread stops)
+
+
 class _Move:
     __slots__ = ("id", "owner", "end_t", "task", "gen")
 
@@ -137,10 +140,11 @@ class Controller:
         self.last_controller_frame = self._clock()
 
     # ---- deferred hand-off to the loop --------------------------------------------------------
-    def _defer(self, result: Optional[str], events: list, gen: Optional[int] = None) -> None:
-        """Queue a move result and events for the loop. With `gen` (from the sensor thread) the result
-        finishes only a move that was already running when the stop was issued (move.gen <= gen)."""
-        self._deferred.append((result, events, gen))
+    def _defer(self, result: Optional[str], events: list, move: Any = _ANY) -> None:
+        """Queue a move result and events for the loop. With `move` (from the sensor thread: the move that was
+        current, possibly None, when it stopped the motors) the result finishes only that exact move, and only
+        if it is still the current one; a move started afterwards is never touched by an older stop."""
+        self._deferred.append((result, events, move))
 
     def _kick(self) -> None:
         if self._loop is None or threading.get_ident() == self._loop_thread:
@@ -154,10 +158,10 @@ class Controller:
     def _drain(self) -> None:
         while True:
             try:
-                result, events, gen = self._deferred.popleft()
+                result, events, move = self._deferred.popleft()
             except IndexError:
                 return
-            if result is not None and (gen is None or (self._move is not None and self._move.gen <= gen)):
+            if result is not None and (self._move is move if move is not _ANY else True):
                 self._finish_move(result)
             for kind, fields in events:
                 self._emit(kind, **fields)
@@ -170,7 +174,8 @@ class Controller:
                 log.exception("event callback failed")
 
     def _finish_move(self, result: str) -> None:
-        mv, self._move = self._move, None
+        with self._lock:
+            mv, self._move = self._move, None
         if mv is None:
             return
         if mv.task is not None and mv.task is not asyncio.current_task():
@@ -182,24 +187,24 @@ class Controller:
                 log.exception("done callback failed")
 
     # ---- motor path -----------------------------------------------------------------------
-    def _stop_motors(self, gen: Optional[int] = None) -> bool:
+    def _stop_motors(self, move: Any = _ANY) -> bool:
         try:
             ok = self.backend.stop_motors()
         except Exception as e:  # stop_motors must not raise; treat it as unconfirmed
             log.error("stop_motors raised: %s", e)
             ok = False
         if ok is False:
-            self._latch_hw_fault("could not confirm the motors stopped", gen)
+            self._latch_hw_fault("could not confirm the motors stopped", move)
             return False
         return True
 
-    def _latch_hw_fault(self, msg: str, gen: Optional[int] = None) -> None:
+    def _latch_hw_fault(self, msg: str, move: Any = _ANY) -> None:
         with self._lock:
             if self.hw_fault:
                 return
             self.hw_fault = msg
         self._sync_latch()
-        self._defer("hw_fault", [("hw_fault", {"msg": msg})], gen)
+        self._defer("hw_fault", [("hw_fault", {"msg": msg})], move)
 
     def _sync_latch(self) -> None:
         """Mirror the stop latches (estop / hold / hw_fault) into the backend, which refuses every motor write
@@ -214,18 +219,19 @@ class Controller:
         except Exception:
             log.exception("stop latch failed")
 
-    def _enforce_latches(self, gen: Optional[int] = None) -> None:
+    def _enforce_latches(self, move: Any = _ANY) -> None:
         """While a latch is set the motors must be off: re-issue the stop if they are not (or are unconfirmed)."""
         if self.backend is None:
             return
         self._sync_latch()
         forward_blocked = self.blocked and self._motion_dir() == "forward"
         if (self.estopped or self.hold or self.hw_fault or forward_blocked) and any(self.backend.motion()):
-            self._stop_motors(gen)
+            self._stop_motors(move)
 
     def _halt(self, result: Optional[str] = None, events: Optional[list] = None) -> None:
         """Stop the motors and drop the motion intent (loop thread). Bumps the motion generation."""
-        self._gen += 1
+        with self._lock:
+            self._gen += 1
         if self._rev_task:
             self._rev_task.cancel()
             self._rev_task = None
@@ -345,7 +351,8 @@ class Controller:
         if direction == "forward":
             self._check_forward(eff)
         if new_command:
-            self._gen += 1
+            with self._lock:
+                self._gen += 1
         prev = self._dir, self._eff
         self._dir, self._eff = direction, eff   # before the write: the sensor thread sizes its margin from _eff
         if self._write(direction, eff) == "inhibited":
@@ -405,7 +412,8 @@ class Controller:
         if timed:
             ms = f["ms"]
             mv = _Move(cmd_id, owner, self._clock() + ms / 1000.0, self._gen)
-            self._move = mv
+            with self._lock:
+                self._move = mv
             mv.task = asyncio.get_running_loop().create_task(self._run_move(mv, ms / 1000.0))
             return {"speed": eff, "ms": ms}
         return {"speed": eff}
@@ -551,12 +559,17 @@ class Controller:
         self.stop_and_hold("disconnect")
 
     def new_controller(self, returning: bool) -> None:
-        """Hand-over: e-stop persists; config resets; hold clears for a new controller (not a boot hold)."""
+        """Hand-over: e-stop persists; config resets for a new controller. EVERY acquisition of control starts on
+        hold (reason "control", or "boot" if that is already the reason): only `resume` clears it."""
         self.attached = True
         if not returning:
             self.cfg = dict(safety.DEFAULT_CONFIG)
-            if self.hold and self.hold_reason != "boot":
-                self.hold, self.hold_reason = False, None
+        if not self.hold:
+            self.hold, self.hold_reason = True, "control"
+            self._emit("hold", reason="control")
+            if self.backend is not None and self._moving():
+                self._halt("stopped" if self._move else None)
+                self._drain()
         self._sync_latch()
         self.touch()
         self._set_hint()
@@ -584,9 +597,12 @@ class Controller:
 
     def _guard(self, s: Sample) -> None:
         now = self._clock()
-        gen = self._gen   # read before any stop: only a move at least this old is finished by this stop
-        forward = self._motion_dir() == "forward"
-        eff = self._eff
+        # One consistent snapshot: what the motors are doing (actually applied) and which move was current. A stop
+        # issued below finishes only that move (never one started after this point).
+        with self._lock:
+            move = self._move
+            forward = self._motion_dir() == "forward"
+            eff = self._eff
         distance_guard = self.cfg["obstacle_stop"]
         margin = self._margin(eff if forward else (self._speed_setting or 0))
         events: list = []
@@ -617,14 +633,14 @@ class Controller:
                 events.append(("obstacle_stop", {"cm": None if s.dist_cm is None else round(s.dist_cm, 1)}))
             else:
                 events.append(("sensor_fault", {"sensor": "ultrasonic"}))
-            self._defer("obstacle", events, gen)
+            self._defer("obstacle", events, move)
         else:
             self._update_clear(s, now, margin, distance_guard)
             if events:
                 self._defer(None, events)
         if not hasattr(self.backend, "set_deadline_probe"):
             self._check_deadlines_here(now)
-        self._enforce_latches(gen)
+        self._enforce_latches(move)
         self._kick()
 
     def _update_clear(self, s: Sample, now: float, margin: float, distance_guard: bool) -> None:
@@ -646,14 +662,15 @@ class Controller:
 
     def _deadline_latch(self, reason: str) -> None:
         """Called from the sensor thread after the backend tried to stop the motors."""
-        gen = self._gen
+        with self._lock:
+            move = self._move
         if reason == "stop_failed":
-            self._latch_hw_fault("could not confirm the motors stopped", gen)
+            self._latch_hw_fault("could not confirm the motors stopped", move)
         else:
             with self._lock:
                 self.hold, self.hold_reason = True, "watchdog"
             self._sync_latch()
-            self._defer("watchdog", [("watchdog_stop", {}), ("hold", {"reason": "watchdog"})], gen)
+            self._defer("watchdog", [("watchdog_stop", {}), ("hold", {"reason": "watchdog"})], move)
         self._kick()
 
     def _check_deadlines_here(self, now: float) -> None:

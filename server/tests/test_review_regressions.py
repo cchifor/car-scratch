@@ -33,6 +33,37 @@ async def test_stale_guard_result_does_not_cancel_a_newer_move():
     assert r.backend.duty == (0, 0) and (7, "completed") in r.dones
 
 
+async def test_guard_stop_between_generation_bump_and_write_keeps_the_reverse_timer():
+    """Final review: the sensor thread stops the PREVIOUS forward motion after the new command bumped the
+    generation but before its motor write; that stop's deferred result must not finish the new move."""
+    class Hooked(FakeBackend):
+        before_backward = None
+
+        def set_motors(self, left, right):
+            hook, self.before_backward = (self.before_backward, None) if left < 0 else (None, self.before_backward)
+            if hook:
+                hook()
+            return super().set_motors(left, right)
+
+    b = Hooked()
+    r = Rig(backend=b)
+    r.run(0.2)
+    r.cmd("drive", dir="forward", speed=50)
+    def sensor_thread():                                   # the sensor callback fires inside the interleaving
+        t = threading.Thread(target=lambda: r.sample(10.0))
+        t.start()
+        t.join()
+
+    b.before_backward = sensor_thread
+    r.cmd("move", dir="backward", speed=30, ms=100, _id=9)
+    assert r.dones == [] and r.ctl._move is not None and r.ctl._move.id == 9
+    assert b.duty[0] < 0
+    await asyncio.sleep(0.3)
+    assert b.duty == (0, 0), "the 100 ms reverse move must stop on its own timer"
+    assert (9, "completed") in r.dones and (9, "obstacle") not in r.dones
+
+
+
 async def test_sensor_thread_never_writes_the_generation():
     class Gated(FakeBackend):
         gate = entered = None

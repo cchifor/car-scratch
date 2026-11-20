@@ -67,12 +67,12 @@ chown "$CAR_USER:$CAR_USER" "$HOME_DIR/.config" "$HOME_DIR/.config/systemd" "$HO
     "$HOME_DIR/car-scratch" 2>/dev/null || true
 
 # 5. hardware watchdog: the SoC reboots the Pi if systemd itself hangs (motors are zeroed again on boot, see 6)
-write_file() {   # write_file <path> ; content on stdin ; returns 0 when the file changed
+write_file() {   # write_file <path> [mode] ; content on stdin ; returns 0 when the file changed
     tmp=$(mktemp)
     cat > "$tmp"
     if [ -f "$1" ] && cmp -s "$tmp" "$1"; then rm -f "$tmp"; return 1; fi
     mkdir -p "$(dirname "$1")"
-    install -m 644 "$tmp" "$1"
+    install -m "${2:-644}" "$tmp" "$1"
     rm -f "$tmp"
 }
 if write_file /etc/systemd/system.conf.d/car-scratch-watchdog.conf <<'CONF'
@@ -84,16 +84,40 @@ then
     note "hardware watchdog on: /etc/systemd/system.conf.d/car-scratch-watchdog.conf (RuntimeWatchdogSec=10)"
 fi
 
-# 6. boot-time motor zeroing (system unit, runs as root before the user service exists)
+# 6. boot-time motor zeroing (system unit, runs as root before the user service exists).
+#    Root must not run Python from a user-writable tree: safe_stop.py (stdlib + smbus2, standalone) is copied to a
+#    root-owned directory, and a root-owned wrapper waits (up to ~10 s) for /dev/i2c-1 before running it.
+#    Re-run this script after a deploy that changes safe_stop.py to refresh the copy.
+LIBDIR=/usr/local/lib/car-scratch
+SRC_STOP="$HOME_DIR/car-scratch/current/server/picar_server/safe_stop.py"
+install -d -m 0755 -o root -g root "$LIBDIR"
+if [ -f "$SRC_STOP" ]; then
+    if ! cmp -s "$SRC_STOP" "$LIBDIR/safe_stop.py" 2>/dev/null; then
+        install -m 0644 -o root -g root "$SRC_STOP" "$LIBDIR/safe_stop.py"
+        note "installed $LIBDIR/safe_stop.py (root-owned)"
+    fi
+elif [ ! -f "$LIBDIR/safe_stop.py" ]; then
+    echo "WARNING: no release deployed yet; re-run pi-setup.sh after the first deploy to install safe_stop.py" >&2
+fi
+if write_file "$LIBDIR/safe-stop-wait.sh" 0755 <<'CONF'
+#!/bin/sh
+# wait up to ~10 s for the I2C bus device, then zero the rear motors; never fails the boot
+i=0
+while [ ! -e /dev/i2c-1 ] && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+[ -f /usr/local/lib/car-scratch/safe_stop.py ] || { echo "safe_stop.py not installed"; exit 0; }
+exec /usr/bin/python3 /usr/local/lib/car-scratch/safe_stop.py
+CONF
+then
+    note "installed $LIBDIR/safe-stop-wait.sh"
+fi
 if write_file /etc/systemd/system/car-safe-stop.service <<CONF
 [Unit]
 Description=Zero the Car Scratch rear motors at boot
-After=local-fs.target dev-i2c\x2d1.device
+After=local-fs.target
 
 [Service]
 Type=oneshot
-Environment=PYTHONPATH=$HOME_DIR/car-scratch/current/server
-ExecStart=-/usr/bin/python3 -m picar_server.safe_stop
+ExecStart=-$LIBDIR/safe-stop-wait.sh
 
 [Install]
 WantedBy=multi-user.target

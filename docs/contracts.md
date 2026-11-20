@@ -30,7 +30,7 @@ Every controller (the shared car, and each private sim) applies these rules.
 | Sensor freshness | The **loop** checks sample age: > 500 ms while moving forward → stop as for a fault. |
 | Deadlines (real car) | No separate liveness thread. The loop writes `last_loop_tick` and `last_controller_frame` (monotonic floats). The **sensor thread**, every iteration, stops the motors and latches hold if either is stale (> 1 s / > `wd_ms`) while motors run. The sensor-thread body catches every exception (and stops the motors before dying). |
 | HW fault | A motor write that fails twice, or `stop_motors()` returning False (lock timeout or I2C error) → `hw_fault` latched (like e-stop; cleared by `estop_reset` only after a successful zero write), `event hw_fault`. |
-| Hand-over | e-stop persists; config resets to defaults; hold cleared for a new controller, kept for a returning lease holder. |
+| Hand-over | e-stop persists; config resets to defaults; every acquisition of car control (new controller, take, mode to car, returning lease holder) starts on hold (reason `control`, or `boot`); only `resume` clears it. |
 
 Pure helpers live in `server/picar_server/safety.py` and are reused by the sim.
 

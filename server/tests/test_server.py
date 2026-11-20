@@ -326,7 +326,7 @@ async def test_control_take_release_and_force(srv):
     await a.until(lambda d: d["t"] == "role" and d["role"] == "controller")
 
 
-async def test_hand_over_resets_config_and_clears_hold_for_a_new_controller(srv):
+async def test_hand_over_resets_config_and_starts_the_new_controller_on_hold(srv):
     a, _ = await hello(srv)
     await go(a)
     await a.ok("config", stop_cm=50, speed_limit=40)
@@ -334,7 +334,10 @@ async def test_hand_over_resets_config_and_clears_hold_for_a_new_controller(srv)
     await b.send(t="control", action="take", force=True)
     await b.until(lambda d: d["t"] == "role" and d["role"] == "controller")
     tel = await b.until(lambda d: d["t"] == "tel" and d["ctl"]["role"] == "controller")
-    assert tel["safety"]["stop_cm"] == 20 and tel["safety"]["speed_limit"] == 100 and not tel["safety"]["hold"]
+    assert tel["safety"]["stop_cm"] == 20 and tel["safety"]["speed_limit"] == 100 and tel["safety"]["hold"]
+    assert await b.err("drive", dir="forward", speed=30) == "hold"      # a still-running script gets nothing
+    await b.ok("resume")
+    await b.ok("drive", dir="forward", speed=30)
 
 
 async def test_disconnect_stops_latches_hold_and_lease_holder_returns_on_hold(srv):
@@ -356,6 +359,19 @@ async def test_disconnect_stops_latches_hold_and_lease_holder_returns_on_hold(sr
     assert wb["role"] == "controller" and wb["safety"]["hold"] is True
     assert await back.err("drive", dir="forward", speed=30) == "hold"
     await back.ok("resume")
+
+
+async def test_lease_expired_reconnect_starts_on_hold(aiohttp_client, tmp_path):
+    c = await aiohttp_client(create_app(settings(tmp_path, lease_s=0.3)))
+    a, _ = await hello(c)
+    await go(a)
+    await a.ok("drive", dir="forward", speed=30)
+    await a.ws.close()
+    await asyncio.sleep(0.6)                                          # the lease expired
+    a2, w = await hello(c)
+    assert w["role"] == "controller" and w["safety"]["hold"] is True
+    assert await a2.err("drive", dir="forward", speed=30) == "hold"
+    await a2.ok("resume")
 
 
 async def test_lease_expires(aiohttp_client, tmp_path):
@@ -385,7 +401,7 @@ async def test_mode_switch_stops_car_releases_control_and_answers_with_welcome(s
     assert st["clients"]["car_controller"] is False and st["clients"]["sim_sessions"] == 1
     await a.send(t="mode", mode="car")
     w = await a.until(lambda d: d["t"] == "welcome" and d["mode"] == "car")
-    assert w["role"] == "controller" and w["safety"]["hold"] is False      # released: a new controller clears hold
+    assert w["role"] == "controller" and w["safety"]["hold"] is True       # every acquisition of control starts on hold
     tel = await a.until(lambda d: d["t"] == "tel" and d["mode"] == "car")
     assert tel["drive"]["moving"] is False
     st = await (await srv.get("/api/status")).json()
@@ -405,6 +421,23 @@ async def test_watchdog_over_the_wire_stops_and_holds(srv):
     await a.ok("resume")
     await a.event("resumed")
     await a.ok("drive", dir="forward", speed=30)
+
+
+async def test_rejected_mode_requests_do_not_feed_the_watchdog(srv):
+    a, _ = await hello(srv, mode="car", want="control")
+    await go(a)
+    await a.ok("drive", dir="forward", speed=30)
+    for _ in range(8):                                               # no hb: only failing mode requests
+        await a.send(t="mode", mode="sim", world="nowhere")
+        await asyncio.sleep(0.2)
+    seen = 0
+
+    def eighth_reject(d):
+        nonlocal seen
+        seen += d["t"] == "err" and d["msg"] == "unknown world"
+        return seen == 8
+    await a.until(eighth_reject)                                     # every request really was rejected ...
+    assert any(d["t"] == "event" and d["kind"] == "watchdog_stop" for d in a.log),         "... and the watchdog stopped the car before the last one (they must not count as liveness)"
 
 
 async def test_heartbeats_keep_the_controller_alive(srv):

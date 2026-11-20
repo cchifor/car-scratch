@@ -349,8 +349,8 @@ class Session:
                 self._control(action, force)
             elif t == "mode":
                 mode, world = protocol.validate_mode(msg)
-                self._accept()
-                self._switch_mode(mode, world)
+                if self._switch_mode(mode, world):   # a rejected mode request must not feed the watchdog
+                    self._accept()
             else:
                 raise ProtocolError("bad_request", f"unexpected message {t!r}")
         except ProtocolError as e:
@@ -427,13 +427,15 @@ class Session:
             self.hub.release(self)
         self.send({"t": "role", "role": self.role, "controller_present": self.hub.controller is not None})
 
-    def _switch_mode(self, mode: str, world: Optional[str]) -> None:
+    def _switch_mode(self, mode: str, world: Optional[str]) -> bool:
+        """True when the mode operation succeeded (or was a no-op); False after an err reply."""
         hub = self.hub
         if mode == "car":
             if self.mode == "sim":
                 self.dispose_sim()
             elif self.hub.controller is self:
-                return self._announce()
+                self._announce()
+                return True
             dup = hub.live_client(self.client_id, self)
             self._enter_car(dup)
         else:
@@ -441,9 +443,11 @@ class Session:
                 try:
                     load_world(world or DEFAULT_WORLD, hub.world_dir)
                 except (KeyError, WorldError):
-                    return self.err("bad_request", "unknown world")
+                    self.err("bad_request", "unknown world")
+                    return False
                 if hub.sim_count() >= hub.max_sims:
-                    return self.err("sim_busy", f"at most {hub.max_sims} simulator sessions")
+                    self.err("sim_busy", f"at most {hub.max_sims} simulator sessions")
+                    return False
                 hub.release(self)
                 self._enter_sim(world)
             else:
@@ -452,8 +456,10 @@ class Session:
                     self.sim.backend.set_world(load_world(world or self.world_id or DEFAULT_WORLD, hub.world_dir))
                     self.world_id = self.sim.backend.world.id
                 except (KeyError, WorldError):
-                    return self.err("bad_request", "unknown world")
+                    self.err("bad_request", "unknown world")
+                    return False
         self._announce()
+        return True
 
     # ---- commands -------------------------------------------------------------------------------------------
     def _cmd(self, cid: int, op: str, f: dict) -> bool:

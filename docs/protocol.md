@@ -51,8 +51,9 @@ remember to stop.
   `client_id` keeps a **30 s lease**: only the same `client_id` (e.g. an iPad tab that came back) gets
   control without `force` — and it comes back on hold (it must `resume`).
 - If a `hello` arrives with a `client_id` that already has a live socket, the new socket is a viewer.
-- Hand-over: e-stop persists; config resets to defaults; hold is cleared for a *new* controller
-  (a returning lease holder keeps it).
+- Hand-over: e-stop persists; config resets to defaults; every acquisition of car control (hello that
+  becomes controller, `control take`, `mode` car, a returning lease holder) starts **on hold** (reason
+  `control`, or `boot`); the new controller must `resume`.
 
 ## 3. Client → server
 

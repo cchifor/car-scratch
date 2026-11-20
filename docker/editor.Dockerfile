@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7-labs
 # Builds the Car Scratch editor (scratch-gui playground) as static files.
-#   docker buildx build -f docker/editor.Dockerfile --target www --output type=local,dest=out/www .
+#   docker buildx build -f docker/editor.Dockerfile --target www --build-arg BUILD_SHA=$(git rev-parse --short=12 HEAD) \
+#     --output type=local,dest=out/www .
 FROM node:24.22.3-trixie AS deps
 ENV HUSKY=0 CI=true NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false NPM_CONFIG_UPDATE_NOTIFIER=false
 WORKDIR /src
@@ -18,7 +19,11 @@ RUN for p in task-herder scratch-storage scratch-svg-renderer scratch-paint scra
 FROM src AS build
 WORKDIR /src/editor/packages/scratch-gui
 ENV NODE_OPTIONS=--max-old-space-size=8192
+# The commit this bundle is built from (deploy/deploy.sh refuses a bundle whose build-sha.txt is not HEAD).
+ARG BUILD_SHA=dev
+ENV BUILD_SHA=$BUILD_SHA
 RUN NODE_ENV=production npx webpack \
+ && printf '%s\n' "$BUILD_SHA" > build/build-sha.txt \
  && cd build && find . -name '*.map' -delete \
  && find . -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' -o -name '*.json' -o -name '*.webmanifest' -o -name '*.wasm' \) -size +1k -exec gzip -9 -k {} \;
 
