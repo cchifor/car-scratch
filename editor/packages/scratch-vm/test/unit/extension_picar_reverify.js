@@ -184,3 +184,26 @@ test('a pending set_speed does not override a later drive', t => {
     t.equal(sent[sent.length - 1].op, 'drive');
     t.end();
 });
+
+test('a reset cancels a trailing E-STOP post still waiting in its throttle window', t => {
+    const {link, clock, fetches} = setup();
+    link.estop();
+    clock.advance(100);
+    link.estop();
+    t.equal(fetches.length, 1, 'second press is throttled into a trailing post');
+    link.send('estop_reset');
+    clock.advance(1000);
+    t.equal(fetches.length, 1, 'the trailing post must not re-latch after the reset');
+    t.end();
+});
+
+test('a server estop_reset event also cancels a pending trailing E-STOP post', t => {
+    const {link, ws, clock, fetches} = setup({role: 'viewer', safety: {estop: false, hold: false}});
+    link.estop();
+    clock.advance(100);
+    link.estop();
+    ws.serverSend({t: 'event', kind: 'estop_reset', by: 'controller'});
+    clock.advance(1000);
+    t.equal(fetches.length, 1);
+    t.end();
+});

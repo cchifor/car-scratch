@@ -184,6 +184,8 @@ class CarLink extends EventEmitter {
      * @returns {?number} the cmd id when sent now, 0 when queued for the next 50 ms flush, null when dropped
      */
     send (op, fields = {}) {
+        // A reset supersedes any E-STOP POST still waiting at the end of its throttle window.
+        if (op === 'estop_reset') this._clearEstopPostTimer();
         const ws = this._ws;
         const sockOpen = !!ws && ws.readyState === WS_OPEN;
         if (!sockOpen) return null;
@@ -791,7 +793,10 @@ class CarLink extends EventEmitter {
         const safety = this._state.safety || {};
         switch (msg.kind) {
         case 'estop': this._setState({safety: Object.assign({}, safety, {estop: true})}); break;
-        case 'estop_reset': this._setState({safety: Object.assign({}, safety, {estop: false})}); break;
+        case 'estop_reset':
+            this._clearEstopPostTimer();
+            this._setState({safety: Object.assign({}, safety, {estop: false})});
+            break;
         case 'hold': this._setState({safety: Object.assign({}, safety, {hold: true})}); break;
         case 'resumed': this._setState({safety: Object.assign({}, safety, {hold: false})}); break;
         case 'hw_fault': this._setState({safety: Object.assign({}, safety, {hw_fault: msg.msg || true})}); break;
