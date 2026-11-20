@@ -1,0 +1,15 @@
+Car Scratch
+Copyright (C) 2026 Constantin Chifor
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License version 3 (AGPL-3.0-only); see LICENSE.
+
+editor/ contains the Scratch editor (https://github.com/scratchfoundation/scratch-editor),
+imported at commit 105e22ea3ff935f2e4aa3d0b3b26f661e98d298a, Copyright (C) Massachusetts Institute of
+Technology and the Scratch Foundation, licensed AGPL-3.0-only. See editor/LICENSE and editor/TRADEMARK.
+Car Scratch modifies that code; every modified upstream file is listed in docs/modified-upstream-files.md
+with the date of the change.
+
+Car Scratch is not affiliated with, sponsored by or endorsed by the Scratch Foundation or MIT.
+"Scratch" is a trademark of the Scratch Foundation; the Scratch logo, Scratch Cat and Gobo are not
+used by Car Scratch.
