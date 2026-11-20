@@ -46,3 +46,17 @@ stage controls too (reviewer A).
 Disagreement — default tab: reviewer B proposed Pi Car on every device; reviewer A proposed Pi Car only on touch
 devices. **Taken: reviewer A** — on desktop the Sprites list is how you choose whose code you edit, and several
 examples have multiple sprites; a stored choice always wins.
+
+## D3 — Final review (2026-11-20/21)
+
+| Topic | Decision | Source |
+|---|---|---|
+| Hold on control acquisition | **Every** acquisition of car control (hello, take, mode→car, returning lease) starts on hold; only Resume / green flag clear it. Supersedes D1's "hold cleared for a new controller". The extension also stops the project on viewer→controller, mode→car and reconnect | reviewer B (B1), consistent with reviewer A's earlier "atomic stop-and-hold on transitions" |
+| Reverse-move race | Deferred guard results bound to the move object, not a generation number | both |
+| Zero speed / de-dupe | `set_speed 0` / `drive 0` sent as `stop`; drive and set_speed invalidate each other's de-dupe | both |
+| E-STOP stops the project locally | CarLink emits a local estop event → `runtime.stopAll()` without waiting for the server | reviewer B |
+| Bypass flood | Identical bypass ops de-duplicated within 50 ms; REST e-stop throttled | reviewer B |
+| Version stamping | `BUILD_SHA` stamped into the editor build; deploy refuses a mismatched `out/www`; browser check ignores `dev` | both |
+| Rotate overlay / hw_fault | E-STOP inside the rotate overlay; persistent hardware-fault banner with Reset | reviewer A |
+| Trademarked characters | Scratch characters filtered out of the sprite/costume libraries; time-travel logos removed; own favicon | both |
+| Product name | "Car Scratch" kept (owner decision); both reviewers note the Scratch TRADEMARK file restricts using the name to promote derivatives — owner to revisit before any public release | owner |
