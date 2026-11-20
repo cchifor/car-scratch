@@ -15,6 +15,10 @@ live animation of what the car is doing and a built-in simulator for working wit
 All safety (obstacle stop, watchdog, e-stop, reverse limits) is enforced **on the car**, never in the
 browser. See [docs/safety.md](docs/safety.md).
 
+| Desktop | iPad (landscape) |
+|---|---|
+| ![Car Scratch on a desktop browser](docs/screenshots/desktop.png) | ![Car Scratch on an iPad](docs/screenshots/ipad.png) |
+
 ## Layout
 
 | Path | What |
