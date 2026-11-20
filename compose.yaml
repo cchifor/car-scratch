@@ -41,6 +41,7 @@ services:
       - "./editor/packages/scratch-gui/src:/src/editor/packages/scratch-gui/src"
       - "./editor/packages/scratch-gui/test:/src/editor/packages/scratch-gui/test"
       - "./examples:/src/examples"
+      - "./out/examples:/src/out-examples:ro"
     command: ["sh", "-c", "cd packages/scratch-vm && npx tap --no-coverage test/unit/extension_picar*.js && cd ../scratch-gui && npx jest test/unit/picar"]
 
   e2e:
