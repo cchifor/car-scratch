@@ -95,3 +95,4 @@ Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = 
 | A | `editor/packages/scratch-vm/test/unit/extension_picar.js` |
 | A | `editor/packages/scratch-vm/test/unit/extension_picar_carlink.js` |
 | A | `editor/packages/scratch-vm/test/unit/extension_picar_examples.js` |
+| M | `editor/packages/scratch-gui/src/components/action-menu/icon--sprite.svg` |
