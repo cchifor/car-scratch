@@ -97,7 +97,7 @@ const ExamplesMenu = ({isRtl, vm, depth}) => {
             onKeyDown={handleKeyDown}
             ref={menuRef}
         >
-            <span className={styles.collapsibleLabel}>
+            <span className={styles.examplesLabel}>
                 <FormattedMessage {...messages.title} />
             </span>
             <img src={dropdownCaret} />

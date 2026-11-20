@@ -4,6 +4,7 @@ import {
     advanceTreadPhase,
     angleDelta,
     carToWorld,
+    HUD_RESERVE_PX,
     computeView,
     coneStyle,
     distanceLevel,
@@ -15,6 +16,7 @@ import {
     treadColor,
     treadDirection
 } from '../../../src/components/car-monitor/car-renderer.js';
+import {HUD_HEIGHT, hudText} from '../../../src/components/car-monitor/draw-scene.js';
 
 describe('car-renderer colour thresholds', () => {
     test('red below the margin, amber up to twice the margin, green beyond', () => {
@@ -106,11 +108,24 @@ describe('car-renderer geometry', () => {
     test('computeView fits a world and pans in car mode', () => {
         const fixed = computeView({width: 400, height: 300, world: {size: [200, 100]}, pose: {x: 5, y: 5}});
         expect(fixed.fixed).toBe(true);
-        expect(fixed.scale).toBeCloseTo(368 / 200);
+        // 24 px at the bottom are reserved for the HUD strip: height 300 -> 276, margin 16 each side.
+        expect(fixed.scale).toBeCloseTo(Math.min(368 / 200, 244 / 100));
+        expect(fixed.oy).toBe(-12);
         const pan = computeView({width: 400, height: 300, world: null, pose: {x: 5, y: 7}});
         expect(pan.fixed).toBe(false);
         expect(pan.cx).toBe(5);
         expect(pan.cy).toBe(7);
+    });
+    test('computeView reserves the HUD strip so a tall world never sits under it', () => {
+        const v = computeView({width: 400, height: 300, world: {size: [100, 300]}, pose: {x: 0, y: 0}});
+        expect(v.scale).toBeCloseTo((300 - HUD_RESERVE_PX - 32) / 300);
+        expect(HUD_RESERVE_PX).toBeGreaterThanOrEqual(HUD_HEIGHT);
+    });
+    test('hudText is one compact line', () => {
+        expect(hudText({drive: {dir: 'forward', speed: 40}, steer: -15, dist: {state: 'ok', cm: 19}}))
+            .toBe('40% · forward · −15° · 19 cm');
+        expect(hudText(null)).toBe('—');
+        expect(hudText({})).toBe('0% · stopped · 0° · —');
     });
 });
 

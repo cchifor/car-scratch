@@ -4,9 +4,8 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 
 import {useCarState} from '../../lib/picar/use-car-link.js';
-import EStopButton from './estop-button.jsx';
 import messages from './messages.js';
-import MonitorBanners from './monitor-banners.jsx';
+import MonitorBanners, {ObstacleOverlay} from './monitor-banners.jsx';
 import MonitorCanvas from './monitor-canvas.jsx';
 import {computeBanners, sameFlags, telemetryFlags} from './monitor-flags.js';
 import StatusChip from './status-chip.jsx';
@@ -15,6 +14,8 @@ import styles from './car-monitor.css';
 const OBSTACLE_BANNER_MS = 2000;
 
 const worldObject = world => (world && typeof world === 'object' ? world : null);
+// "Arena (two obstacles)" -> "Arena" so the header stays a single row on a small iPad.
+const shortWorldName = name => String(name).replace(/\s*\(.*\)\s*$/, '') || String(name);
 const worldId = world => (typeof world === 'string' ? world : (world && world.id) || '');
 
 /**
@@ -178,16 +179,17 @@ const CarMonitor = ({link}) => {
                             <option
                                 key={w.id}
                                 value={w.id}
-                            >{w.title || w.id}</option>
+                                title={w.title || w.id}
+                            >{shortWorldName(w.title || w.id)}</option>
                         ))}
                     </select>
                 ) : null}
                 <StatusChip state={state} />
-                <EStopButton
-                    link={link}
-                    className={styles.headerEstop}
-                />
             </div>
+            <MonitorBanners
+                banners={banners}
+                onAction={onAction}
+            />
             <div className={styles.stageArea}>
                 <MonitorCanvas
                     link={link}
@@ -196,10 +198,7 @@ const CarMonitor = ({link}) => {
                     showLine={Boolean(caps.line) || lineFault}
                     resetKey={`${state ? state.mode : ''}|${state ? state.connection : ''}`}
                 />
-                <MonitorBanners
-                    banners={banners}
-                    onAction={onAction}
-                />
+                <ObstacleOverlay banners={banners} />
             </div>
         </section>
     );

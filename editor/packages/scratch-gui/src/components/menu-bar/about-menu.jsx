@@ -77,7 +77,7 @@ const AboutMenu = ({
 
     return (
         <button
-            className={classNames(stylesMenuBar.menuBarItem, stylesMenuBar.hoverable, {
+            className={classNames(stylesMenuBar.menuBarItem, stylesMenuBar.hoverable, stylesAboutMenu.aboutButton, {
                 [stylesMenuBar.active]: isExpanded()
             })}
             onClick={handleOnOpen}

@@ -12,6 +12,13 @@ const P = require('./protocol');
 // eslint-disable-next-line @stylistic/max-len
 const blockIconURI = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCIgdmlld0JveD0iMCAwIDQwIDQwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlBpIENhciBibG9jayBpY29uIj4KICA8dGl0bGU+UGkgQ2FyPC90aXRsZT4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMi4yIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2UtbGluZWNhcD0icm91bmQiPgogICAgPHJlY3QgeD0iNSIgeT0iMTciIHdpZHRoPSIzMCIgaGVpZ2h0PSIxMCIgcng9IjMiLz4KICAgIDxwYXRoIGQ9Ik0xMiAxNyBMMTYgMTAuNSBMMjYgMTAuNSBMMzAgMTciLz4KICAgIDxjaXJjbGUgY3g9IjEyIiBjeT0iMjgiIHI9IjMuNSIvPgogICAgPGNpcmNsZSBjeD0iMjgiIGN5PSIyOCIgcj0iMy41Ii8+CiAgPC9nPgogIDxjaXJjbGUgY3g9IjM0IiBjeT0iMjEiIHI9IjEuNiIgZmlsbD0iI0ZGRkZGRiIvPgo8L3N2Zz4K';
 
+/**
+ * Palette category icon (40x40): the white car glyph on a red disc.
+ * @type {string}
+ */
+// eslint-disable-next-line @stylistic/max-len
+const menuIconURI = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCIgdmlld0JveD0iMCAwIDQwIDQwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlBpIENhciBjYXRlZ29yeSBpY29uIj48dGl0bGU+UGkgQ2FyPC90aXRsZT48Y2lyY2xlIGN4PSIyMCIgY3k9IjIwIiByPSIxOSIgZmlsbD0iI0M2MjgyOCIgc3Ryb2tlPSIjOEIxQjFCIiBzdHJva2Utd2lkdGg9IjIiLz48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyMCAyMCkgc2NhbGUoMC41OCkgdHJhbnNsYXRlKC0yMCAtMjEpIj48ZyBmaWxsPSJub25lIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMi4yIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxyZWN0IHg9IjUiIHk9IjE3IiB3aWR0aD0iMzAiIGhlaWdodD0iMTAiIHJ4PSIzIi8+PHBhdGggZD0iTTEyIDE3IEwxNiAxMC41IEwyNiAxMC41IEwzMCAxNyIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMjgiIHI9IjMuNSIvPjxjaXJjbGUgY3g9IjI4IiBjeT0iMjgiIHI9IjMuNSIvPjwvZz48Y2lyY2xlIGN4PSIzNCIgY3k9IjIxIiByPSIxLjYiIGZpbGw9IiNGRkZGRkYiLz48L2c+PC9zdmc+';
+
 const EXTENSION_ID = 'picar';
 const FAR_CM = 999;
 const STEER_DEG = {left: -30, straight: 0, right: 30};
@@ -147,6 +154,7 @@ class Scratch3PiCarBlocks {
             color2: '#A52121',
             color3: '#8B1B1B',
             blockIconURI,
+            menuIconURI,
             blocks: [
                 {
                     opcode: 'drive',

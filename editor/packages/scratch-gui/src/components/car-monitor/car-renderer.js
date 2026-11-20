@@ -241,6 +241,9 @@ const pushTrail = (trail, pose) => {
     return trail;
 };
 
+/** Height in CSS px reserved at the bottom of the canvas for the HUD strip. */
+const HUD_RESERVE_PX = 24;
+
 /**
  * Choose the view (camera centre and scale) for the canvas.
  * @param {object} options - options
@@ -248,10 +251,13 @@ const pushTrail = (trail, pose) => {
  * @param {number} options.height - canvas CSS height
  * @param {?object} options.world - sim world (with size) or null in car mode
  * @param {{x: number, y: number}} options.pose - car pose (used in car mode)
- * @returns {{cx: number, cy: number, scale: number, fixed: boolean}} centre in cm, scale in px per cm;
+ * @returns {{cx: number, cy: number, scale: number, fixed: boolean, oy: number}} centre in cm, scale in px per cm;
  *   fixed is true when the camera shows the whole world (no panning)
  */
-const computeView = ({width, height, world, pose}) => {
+const computeView = ({width, height: fullHeight, world, pose}) => {
+    // The bottom HUD strip is reserved: the world never sits under it. oy shifts the view centre up.
+    const height = Math.max(1, fullHeight - HUD_RESERVE_PX);
+    const oy = -HUD_RESERVE_PX / 2;
     const minSide = Math.max(1, Math.min(width, height));
     if (world && Array.isArray(world.size) && world.size[0] > 0 && world.size[1] > 0) {
         const margin = 16;
@@ -259,10 +265,10 @@ const computeView = ({width, height, world, pose}) => {
             (width - (2 * margin)) / world.size[0],
             (height - (2 * margin)) / world.size[1]
         ));
-        return {cx: 0, cy: 0, scale, fixed: true};
+        return {cx: 0, cy: 0, scale, fixed: true, oy};
     }
     // Car mode: about 110 cm across the shorter side, panning with the car.
-    return {cx: pose.x, cy: pose.y, scale: minSide / 110, fixed: false};
+    return {cx: pose.x, cy: pose.y, scale: minSide / 110, fixed: false, oy};
 };
 
 /**
@@ -286,6 +292,7 @@ export {
     CONE_MAX_CM,
     CONE_UNKNOWN_CM,
     DEFAULT_GEOMETRY,
+    HUD_RESERVE_PX,
     TRAIL_MAX_POINTS,
     advanceTreadPhase,
     angleDelta,

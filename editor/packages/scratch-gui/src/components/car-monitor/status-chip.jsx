@@ -1,7 +1,7 @@
 import classNames from 'classnames';
 import PropTypes from 'prop-types';
 import React from 'react';
-import {FormattedMessage} from 'react-intl';
+import {FormattedMessage, useIntl} from 'react-intl';
 
 import messages from './messages.js';
 import styles from './car-monitor.css';
@@ -22,21 +22,24 @@ const describeStatus = state => {
     if (pending) return {tone: 'warn', message: messages.statusConnecting};
     if (state.connection === 'reload') return {tone: 'bad', message: messages.statusReload};
     if (state.connection !== 'open') return {tone: 'bad', message: messages.statusOffline};
-    if (state.mode === 'sim') return {tone: 'ok', message: messages.statusSim};
+    if (state.mode === 'sim') return {tone: 'ok', message: messages.statusSim, dotOnly: true};
     if (state.role === 'viewer') return {tone: 'info', message: messages.statusViewer};
     return {tone: 'ok', message: messages.statusController};
 };
 
 const StatusChip = ({state, className}) => {
-    const {tone, message} = describeStatus(state);
+    const intl = useIntl();
+    const {tone, message, dotOnly} = describeStatus(state);
+    // In sim mode the Car | Simulator switch already says it: only the coloured dot is shown.
     return (
         <span
             className={classNames(styles.chip, toneClass(tone), className)}
             data-tone={tone}
             role="status"
+            aria-label={dotOnly ? intl.formatMessage(message) : null}
         >
             <span className={styles.chipDot} />
-            <FormattedMessage {...message} />
+            {dotOnly ? null : <FormattedMessage {...message} />}
         </span>
     );
 };

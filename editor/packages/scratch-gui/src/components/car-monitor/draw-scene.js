@@ -20,6 +20,7 @@ const WHEEL_WIDTH_CM = 2.4;
 
 const drawGrid = (ctx, view, width, height) => {
     const halfW = width / 2 / view.scale;
+    const midY = (height / 2) + (view.oy || 0);
     const halfH = height / 2 / view.scale;
     ctx.lineWidth = 1;
     ctx.strokeStyle = 'rgba(96,125,139,0.22)';
@@ -30,7 +31,7 @@ const drawGrid = (ctx, view, width, height) => {
         ctx.lineTo(sx, height);
     }
     for (const y of gridPositions(view.cy - halfH, view.cy + halfH, GRID_STEP_CM)) {
-        const sy = Math.round((height / 2) - ((y - view.cy) * view.scale)) + 0.5;
+        const sy = Math.round(midY - ((y - view.cy) * view.scale)) + 0.5;
         ctx.moveTo(0, sy);
         ctx.lineTo(width, sy);
     }
@@ -280,32 +281,32 @@ const drawLights = (ctx, geometry, tel) => {
     }
 };
 
-const hudLines = tel => {
-    if (!tel) return ['—'];
+const HUD_HEIGHT = 22;
+
+const hudText = tel => {
+    if (!tel) return '—';
     const drive = tel.drive || {};
     const dir = drive.dir ? drive.dir : 'stopped';
     const speed = drive.dir ? `${Math.round(drive.speed || 0)}%` : '0%';
-    const steer = `${Math.round(typeof tel.steer === 'number' ? tel.steer : 0)}°`;
+    const steer = `${Math.round(typeof tel.steer === 'number' ? tel.steer : 0)}°`.replace('-', '−');
     let dist = '—';
     if (tel.dist) {
         if (tel.dist.state === 'ok' && typeof tel.dist.cm === 'number') dist = `${tel.dist.cm.toFixed(0)} cm`;
         else if (tel.dist.state === 'far') dist = 'far';
         else dist = '?';
     }
-    return [`speed ${speed}`, `direction ${dir}`, `steering ${steer}`, `distance ${dist}`];
+    return `${speed} · ${dir} · ${steer} · ${dist}`;
 };
 
-const drawHud = (ctx, tel) => {
-    const lines = hudLines(tel);
-    ctx.font = 'bold 14px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    const lh = 18;
-    const w = 150;
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fillRect(8, 8, w, (lines.length * lh) + 8);
+// One strip along the bottom edge of the canvas (computeView reserves its height).
+const drawHud = (ctx, tel, width, height) => {
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.88)';
+    ctx.fillRect(0, height - HUD_HEIGHT, width, HUD_HEIGHT);
     ctx.fillStyle = '#263238';
-    lines.forEach((text, i) => ctx.fillText(text, 14, 12 + (i * lh)));
+    ctx.fillText(hudText(tel), width / 2, height - (HUD_HEIGHT / 2), width - 8);
 };
 
 /**
@@ -333,7 +334,7 @@ const drawScene = (ctx, scene) => {
 
     ctx.save();
     // World frame: cm, +y up.
-    ctx.translate(width / 2, height / 2);
+    ctx.translate(width / 2, (height / 2) + (view.oy || 0));
     ctx.scale(view.scale, -view.scale);
     ctx.translate(-view.cx, -view.cy);
     drawWorld(ctx, world);
@@ -349,7 +350,7 @@ const drawScene = (ctx, scene) => {
     drawLights(ctx, geometry, tel);
     ctx.restore();
 
-    drawHud(ctx, tel);
+    drawHud(ctx, tel, width, height);
 };
 
-export {drawScene, hudLines};
+export {drawScene, hudText, HUD_HEIGHT};

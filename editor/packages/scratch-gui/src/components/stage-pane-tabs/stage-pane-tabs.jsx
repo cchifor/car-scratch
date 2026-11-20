@@ -12,7 +12,21 @@ const STORAGE_KEY = 'picar.stagePaneTab';
 const TAB_SPRITES = 'sprites';
 const TAB_MONITOR = 'monitor';
 
-const initialTab = () => (readSetting(STORAGE_KEY) === TAB_MONITOR ? TAB_MONITOR : TAB_SPRITES);
+const isTouchDevice = () => {
+    try {
+        return Boolean(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches);
+    } catch (e) {
+        return false;
+    }
+};
+
+// The stored choice wins; with none, touch devices (iPad) start on the Pi Car monitor and
+// desktops on Sprites (the sprite list selects whose code you edit).
+const initialTab = () => {
+    const stored = readSetting(STORAGE_KEY);
+    if (stored === TAB_MONITOR || stored === TAB_SPRITES) return stored;
+    return isTouchDevice() ? TAB_MONITOR : TAB_SPRITES;
+};
 
 /**
  * The bottom-right pane: "Sprites | Pi Car". Both panels stay mounted and the inactive one is
