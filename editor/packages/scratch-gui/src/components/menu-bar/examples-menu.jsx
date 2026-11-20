@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import classNames from 'classnames';
 import PropTypes from 'prop-types';
 import {connect} from 'react-redux';
@@ -60,6 +60,25 @@ const ExamplesMenu = ({isRtl, vm, depth}) => {
     } = useMenuNavigation({depth, isRtl});
 
     const expanded = isExpanded();
+
+    // The menu closes itself on any pointerup outside it, and the trigger button is outside it, so by
+    // the time the button's click fires the menu is already closed and a plain "open" handler would
+    // reopen it. The state at pointerdown decides whether the click opens or closes. A click with no
+    // preceding pointerdown (keyboard activation) falls back to the current state.
+    const openAtPointerDown = useRef(null);
+    const handlePointerDown = useCallback(() => {
+        openAtPointerDown.current = expanded;
+    }, [expanded]);
+    // Clicks on the menu items bubble to the button, so choosing an item closes the menu too.
+    const handleClick = useCallback(() => {
+        const wasOpen = openAtPointerDown.current ?? expanded;
+        openAtPointerDown.current = null;
+        if (wasOpen) {
+            handleOnClose();
+        } else {
+            handleOnOpen();
+        }
+    }, [expanded, handleOnClose, handleOnOpen]);
     // The index is fetched when the menu is first opened, and again on later opens so new
     // examples on the car show up without reloading the editor.
     useEffect(() => {
@@ -91,7 +110,8 @@ const ExamplesMenu = ({isRtl, vm, depth}) => {
             className={classNames(styles.menuBarItem, styles.hoverable, {
                 [styles.active]: expanded
             })}
-            onClick={handleOnOpen}
+            onClick={handleClick}
+            onPointerDown={handlePointerDown}
             aria-label={intl.formatMessage(messages.aria)}
             aria-expanded={expanded}
             onKeyDown={handleKeyDown}

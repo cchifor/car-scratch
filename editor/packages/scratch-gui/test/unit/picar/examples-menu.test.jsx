@@ -108,4 +108,58 @@ describe('ExamplesMenu', () => {
         await waitFor(() => expect(vm.loadProject).toHaveBeenCalled());
         expect(link.send).not.toHaveBeenCalled();
     });
+
+    describe('closing', () => {
+        const indexOnly = () => {
+            global.fetch = jest.fn(url => Promise.resolve(
+                url === 'examples/index.json' ?
+                    {ok: true, json: () => Promise.resolve([{id: 'x', title: 'X'}])} :
+                    {ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(1))}
+            ));
+        };
+        const button = () => screen.getByRole('button', {name: 'Examples menu'});
+
+        test('choosing an item closes the menu', async () => {
+            indexOnly();
+            renderMenu();
+            open();
+            expect(button().getAttribute('aria-expanded')).toBe('true');
+            const item = await screen.findByText('X');
+            fireEvent.pointerDown(item);
+            fireEvent.pointerUp(item);
+            fireEvent.click(item);
+            await waitFor(() => expect(button().getAttribute('aria-expanded')).toBe('false'));
+            await waitFor(() => expect(vm.loadProject).toHaveBeenCalled());
+        });
+
+        test('keyboard activation of an item (click without pointerdown) closes the menu', async () => {
+            indexOnly();
+            renderMenu();
+            open();
+            fireEvent.click(await screen.findByText('X'));
+            await waitFor(() => expect(button().getAttribute('aria-expanded')).toBe('false'));
+        });
+
+        test('clicking the menu button again closes it', async () => {
+            indexOnly();
+            renderMenu();
+            fireEvent.pointerDown(button());
+            fireEvent.pointerUp(button());
+            fireEvent.click(button());
+            expect(button().getAttribute('aria-expanded')).toBe('true');
+            fireEvent.pointerDown(button());
+            fireEvent.pointerUp(button());
+            fireEvent.click(button());
+            await waitFor(() => expect(button().getAttribute('aria-expanded')).toBe('false'));
+        });
+
+        test('clicking outside closes it', async () => {
+            indexOnly();
+            renderMenu();
+            open();
+            expect(button().getAttribute('aria-expanded')).toBe('true');
+            fireEvent.pointerUp(document.body);
+            await waitFor(() => expect(button().getAttribute('aria-expanded')).toBe('false'));
+        });
+    });
 });
