@@ -4,7 +4,8 @@ const P = require('./protocol');
 const WS_OPEN = 1;
 
 const defaultClock = () => ({
-    now: () => Date.now(),
+    // Monotonic: a wall-clock step backwards must not make the throttles drop later presses.
+    now: globalThis.performance && globalThis.performance.now ? () => globalThis.performance.now() : () => Date.now(),
     setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
     clearTimeout: h => globalThis.clearTimeout(h),
     setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
@@ -91,6 +92,7 @@ class CarLink extends EventEmitter {
         this._txByOp = {};
         this._otherTx = 0;
         this._lastEstopPostAt = null;
+        this._estopPostTimer = null;
         this._lastConfig = null;
         this._subscribers = new Set();
         this._boundVisibility = () => this._onVisibility();
@@ -129,6 +131,7 @@ class CarLink extends EventEmitter {
     /** Close the socket and do not reconnect. */
     stop () {
         this._stopped = true;
+        this._clearEstopPostTimer();
         this._removeListeners();
         this._clearReconnect();
         const ws = this._ws;
@@ -244,9 +247,18 @@ class CarLink extends EventEmitter {
     estop () {
         this._bypass();
         const now = this._clock.now();
-        if (this._lastEstopPostAt === null || now - this._lastEstopPostAt >= P.ESTOP_POST_MS) {
+        const since = this._lastEstopPostAt === null ? null : now - this._lastEstopPostAt;
+        if (since === null || since < 0 || since >= P.ESTOP_POST_MS) {
+            this._clearEstopPostTimer();
             this._lastEstopPostAt = now;
             this._postEstop();
+        } else if (this._estopPostTimer === null) {
+            // Throttled: one trailing POST at the end of the window, so the last press is never lost.
+            this._estopPostTimer = this._clock.setTimeout(() => {
+                this._estopPostTimer = null;
+                this._lastEstopPostAt = this._clock.now();
+                this._postEstop();
+            }, P.ESTOP_POST_MS - since);
         }
         const ws = this._ws;
         if (ws && ws.readyState === WS_OPEN) {
@@ -373,11 +385,14 @@ class CarLink extends EventEmitter {
      * sent since (stop, pause and estop belong together: an E-STOP press sends both estop and stop): a loop of
      * "stop motors" must not flood the socket.
      * @param {string} op - protocol op
-     * @returns {boolean} true to drop it
+     * @returns {boolean} true to drop it (never for unlatching ops: resume and estop_reset always go out)
      */
     _repeatsLastFrame (op) {
+        if (!P.SAFETY_FAMILY_OPS.includes(op)) return false;
         const last = this._txByOp[op];
-        return !!last && last.other === this._otherTx && this._clock.now() - last.at < P.COALESCE_MS;
+        if (!last || last.other !== this._otherTx) return false;
+        const dt = this._clock.now() - last.at;
+        return dt >= 0 && dt < P.COALESCE_MS;
     }
 
     /** Bypass ops clear pending motion ops (and forget what was last sent, so a repeat is real). */
@@ -410,8 +425,21 @@ class CarLink extends EventEmitter {
         return op !== 'drive' || now - last.at < P.REFRESH_MS;
     }
 
+    _dropPending (op) {
+        if (op in this._pendingTimers) this._clock.clearTimeout(this._pendingTimers[op]);
+        delete this._pendingTimers[op];
+        delete this._pending[op];
+    }
+
     _coalesce (op, fields) {
         const now = this._clock.now();
+        // drive and set_speed both set the speed, so the last request wins whatever its op: a set_speed folds into
+        // a pending drive (the drive carries the direction), and a drive replaces a pending set_speed.
+        if (op === 'set_speed' && this._pending.drive) {
+            this._pending.drive = Object.assign({}, this._pending.drive, {speed: fields.speed});
+            return 0;
+        }
+        if (op === 'drive') this._dropPending('set_speed');
         const merged = op === 'config' ? Object.assign({}, this._pending.config, fields) : fields;
         if (this._pending[op]) {
             this._pending[op] = merged;
@@ -447,6 +475,17 @@ class CarLink extends EventEmitter {
         if (op === 'set_speed') delete this._lastSent.drive;
         if (op === 'config') this._lastConfig = Object.assign({}, this._lastConfig, fields);
         return id;
+    }
+
+    _clearEstopPostTimer () {
+        if (this._estopPostTimer !== null) this._clock.clearTimeout(this._estopPostTimer);
+        this._estopPostTimer = null;
+    }
+
+    /** Any inbound safety change invalidates what the throttles remember: the next E-STOP press must go out. */
+    _safetyChanged () {
+        this._otherTx++;
+        this._lastEstopPostAt = null;
     }
 
     _postEstop () {
@@ -666,11 +705,14 @@ class CarLink extends EventEmitter {
         const sha = msg.server && msg.server.sha;
         // 'dev' (a bundle built outside the release pipeline, or the simulator) never matches: skip the check.
         const known = v => typeof v === 'string' && v !== '' && v !== 'dev';
-        if (known(this._buildSha) && known(sha) && sha !== this._buildSha) {
+        // The server reports a 12-char short sha: tolerate a longer or shorter form of the same commit (>= 7 chars).
+        const sameSha = (a, b) => a === b || (a.length >= 7 && b.length >= 7 && (a.startsWith(b) || b.startsWith(a)));
+        if (known(this._buildSha) && known(sha) && !sameSha(sha, this._buildSha)) {
             this._fatalReload('sha_mismatch', 'editor and car server versions differ');
             return;
         }
         this._attempt = 0;
+        this._safetyChanged();
         this._tel = null;
         this._switchFrom = null;
         this._clearPending();
@@ -712,6 +754,10 @@ class CarLink extends EventEmitter {
         const patch = {};
         const s = msg.safety;
         if (s && typeof s === 'object') {
+            const prev = this._state.safety || {};
+            if (Boolean(prev.estop) !== Boolean(s.estop) || Boolean(prev.hold) !== Boolean(s.hold)) {
+                this._safetyChanged();
+            }
             patch.safety = {
                 estop: s.estop, hold: s.hold, calibrated: s.calibrated, blocked: s.blocked, hw_fault: s.hw_fault
             };
@@ -741,6 +787,7 @@ class CarLink extends EventEmitter {
 
     _onEvent (msg) {
         this._bypassMemory();
+        this._safetyChanged();
         const safety = this._state.safety || {};
         switch (msg.kind) {
         case 'estop': this._setState({safety: Object.assign({}, safety, {estop: true})}); break;
@@ -754,6 +801,7 @@ class CarLink extends EventEmitter {
     }
 
     _onRole (msg) {
+        this._safetyChanged();
         this._lastSent = {};
         this._lastConfig = null;
         this._setState({role: msg.role === 'controller' ? 'controller' : 'viewer'});

@@ -42,7 +42,6 @@ fi
 # One sha format everywhere: the 12-char short sha (CAR_SCRATCH_SHA / /api/status, the release dir, the editor's
 # build-sha.txt written by `docker buildx build --build-arg BUILD_SHA=$(git rev-parse --short=12 HEAD)`).
 SHA=$(git rev-parse --short=12 HEAD)
-FULL_SHA=$(git rev-parse HEAD)
 REL="$BASE/releases/$SHA"
 say "deploy $SHA -> $TARGET:$REL$([ "$DRY" -eq 1 ] && echo '  (dry run)')"
 
@@ -77,7 +76,7 @@ fi
 
 # The editor bundle must be built from the very commit being deployed (never a stale out/www with a newer server).
 BUILT=$(head -n 1 out/www/build-sha.txt 2>/dev/null | tr -d ' ' || true)
-if [ -z "$BUILT" ] || { [ "$BUILT" != "$SHA" ] && [ "$BUILT" != "$FULL_SHA" ]; }; then
+if [ -z "$BUILT" ] || [ "$BUILT" != "$SHA" ]; then
     MSG="out/www was built from '${BUILT:-unknown (no build-sha.txt)}', not from $SHA. Rebuild the editor:
   docker buildx build -f docker/editor.Dockerfile --target www --build-arg BUILD_SHA=\$(git rev-parse --short=12 HEAD) --output type=local,dest=out/www ."
     if [ "$DRY" -eq 1 ]; then say "WARNING: $MSG

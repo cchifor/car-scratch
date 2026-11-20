@@ -54,6 +54,8 @@ class Scratch3PiCarBlocks {
         this._prevMode = null;
         this._tripped = {estop: false, hw_fault: false};
         this._dropped = false;
+        // This browser pressed E-STOP and the server's echo (event / tel) is still to come: it must not stop again.
+        this._localEstopPending = false;
 
         const factory = runtime.picarLinkFactory || Scratch3PiCarBlocks.linkFactory;
         if (factory) {
@@ -126,7 +128,12 @@ class Scratch3PiCarBlocks {
         case 'estop':
         case 'hw_fault':
             // A server event arrives after the state it changed was already acted on (see _onLinkState).
-            if (evt.local === true || !this._tripped[evt.kind]) this._safetyTripped(evt.kind, evt.local === true);
+            if (evt.kind === 'estop' && evt.local !== true && this._localEstopPending) {
+                this._tripped.estop = true;
+                this._localEstopPending = false;
+            } else if (evt.local === true || !this._tripped[evt.kind]) {
+                this._safetyTripped(evt.kind, evt.local === true);
+            }
             break;
         case 'obstacle_stop':
             if (this.armed && this._open()) this._startEventHats('obstacle');
@@ -142,6 +149,7 @@ class Scratch3PiCarBlocks {
      */
     _safetyTripped (kind, local) {
         const wasArmed = this.armed;
+        if (local && kind === 'estop' && !this._tripped.estop) this._localEstopPending = true;
         if (local || this._controlsCar()) this.runtime.stopAll();
         if (kind === 'estop' && wasArmed) this._startEventHats('estop');
     }
@@ -176,9 +184,15 @@ class Scratch3PiCarBlocks {
                 const now = Boolean(state.safety[kind]);
                 if (now && !this._tripped[kind]) {
                     this._tripped[kind] = true;
-                    this._safetyTripped(kind, false);
+                    if (kind === 'estop' && this._localEstopPending) {
+                        // The echo of this browser's own E-STOP: already stopped, hat already started.
+                        this._localEstopPending = false;
+                    } else {
+                        this._safetyTripped(kind, false);
+                    }
                 } else if (!now) {
                     this._tripped[kind] = false;
+                    if (kind === 'estop') this._localEstopPending = false;
                 }
             }
         }
