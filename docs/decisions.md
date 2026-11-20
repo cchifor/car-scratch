@@ -34,3 +34,15 @@ Both reviewers independently flagged the same blockers; all were accepted into c
 | iPad viewport forcing | Dropped (shrinks touch targets); responsive layout only | both |
 | Geometry | `welcome.geometry` is authoritative for drawing | reviewer A |
 | Scope | Examples: 6 first (01, 02, 04, 05, 07, 08), others if time; worlds arena/corridor first | reviewer A |
+
+## D2 — UI layout gate 2 (2026-11-20, from desktop + iPad screenshots)
+
+Both reviewers agreed: one E-STOP in the menu bar (≥ 44 px) plus the floating one in full screen (the
+monitor's duplicate removed); a single-row monitor header; banners out of the canvas; Examples label never
+collapses; Tutorials/Debug removed (online upstream content, not car-related); Pi Car category icon; a
+car-specific default project title. HUD as one bottom strip (reviewer B). Touch targets ≥ 44 px for the
+stage controls too (reviewer A).
+
+Disagreement — default tab: reviewer B proposed Pi Car on every device; reviewer A proposed Pi Car only on touch
+devices. **Taken: reviewer A** — on desktop the Sprites list is how you choose whose code you edit, and several
+examples have multiple sprites; a stored choice always wins.
