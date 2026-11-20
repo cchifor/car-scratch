@@ -15,7 +15,7 @@ const KNOWN_MENUS = new Set(['looks_costume', 'looks_backdrops', 'sound_sounds_m
 const listDir = () => {
     try {
         return fs.readdirSync(DIR);
-    } catch (e) {
+    } catch {
         return [];
     }
 };

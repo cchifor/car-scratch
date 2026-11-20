@@ -42,7 +42,7 @@ services:
       - "./editor/packages/scratch-gui/test:/src/editor/packages/scratch-gui/test"
       - "./examples:/src/examples"
       - "./out/examples:/src/out-examples:ro"
-    command: ["sh", "-c", "cd packages/scratch-vm && npx tap --disable-coverage test/unit/extension_picar*.js && cd ../scratch-gui && npx jest test/unit/picar"]
+    command: ["sh", "-c", "cd packages/scratch-vm && npx tap test/unit/extension_picar*.js && cd ../scratch-gui && npx jest test/unit/picar"]
 
   e2e:
     image: mcr.microsoft.com/playwright:v1.65.1-noble
