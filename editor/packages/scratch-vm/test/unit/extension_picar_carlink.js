@@ -317,6 +317,7 @@ test('hidden tab and pagehide send pause', t => {
     ctx.doc.visibilityState = 'hidden';
     ctx.doc.fire('visibilitychange');
     t.same(ws.cmds().map(c => c.op), ['pause']);
+    ctx.clock.advance(60);
     ctx.win.fire('pagehide');
     t.same(ws.cmds().map(c => c.op), ['pause', 'pause']);
     t.end();
@@ -374,6 +375,7 @@ test('protocol version or build sha mismatch -> reload', t => {
 test('estop while closed is queued once, posted over REST, and sent right after welcome', t => {
     const ctx = makeLink(CarLink);
     ctx.link.estop();
+    ctx.clock.advance(300);
     ctx.link.estop();
     t.equal(ctx.fetches.length, 2);
     t.equal(ctx.fetches[0].url, 'http://car.local:8080/api/estop');

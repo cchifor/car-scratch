@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import React, {useEffect, useState} from 'react';
 import {FormattedMessage} from 'react-intl';
 
+import EStopButton from './estop-button.jsx';
 import messages from './messages.js';
 import styles from './rotate-hint.css';
 
@@ -14,9 +15,10 @@ const matches = () => typeof window !== 'undefined' && typeof window.matchMedia 
  * Full-page overlay asking a touch device in portrait to rotate to landscape. Dismissible.
  * @param {object} props - props
  * @param {boolean} [props.forceVisible] - show regardless of orientation (tests)
+ * @param {?object} [props.link] - the CarLink: the overlay covers both E-STOPs, so it carries its own
  * @returns {?React.Element} the overlay, or null
  */
-const RotateHint = ({forceVisible}) => {
+const RotateHint = ({forceVisible, link}) => {
     const [portrait, setPortrait] = useState(matches);
     const [dismissed, setDismissed] = useState(false);
     useEffect(() => {
@@ -52,12 +54,19 @@ const RotateHint = ({forceVisible}) => {
             >
                 <FormattedMessage {...messages.rotateDismiss} />
             </button>
+            {link ? (
+                <EStopButton
+                    link={link}
+                    className={styles.estop}
+                />
+            ) : null}
         </div>
     );
 };
 
 RotateHint.propTypes = {
-    forceVisible: PropTypes.bool
+    forceVisible: PropTypes.bool,
+    link: PropTypes.shape({estop: PropTypes.func})
 };
 
 export default RotateHint;

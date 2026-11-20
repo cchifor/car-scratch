@@ -81,6 +81,11 @@ const messages = defineMessages({
         defaultMessage: 'E-STOP',
         description: 'Banner: the car is emergency stopped'
     },
+    bannerHwFault: {
+        id: 'picar.banner.hwFault',
+        defaultMessage: 'Hardware fault — lift the car or switch it off. Reset when safe.',
+        description: 'Banner: the motor hardware reported a fault'
+    },
     bannerEstopReset: {
         id: 'picar.banner.estopReset',
         defaultMessage: 'Reset',

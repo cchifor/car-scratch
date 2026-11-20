@@ -8,7 +8,9 @@ import {spriteShape} from '../lib/assets-prop-types.js';
 import VM from '@scratch/scratch-vm';
 import mergeDynamicAssets from '../lib/merge-dynamic-assets.js';
 
-import spriteLibraryContent from '../lib/libraries/sprites.json';
+import spriteLibraryContentRaw from '../lib/libraries/sprites.json';
+import {withoutScratchCharacters} from '../lib/picar/scratch-characters.js';
+const spriteLibraryContent = withoutScratchCharacters(spriteLibraryContentRaw);
 import randomizeSpritePosition from '../lib/randomize-sprite-position';
 import spriteTags from '../lib/libraries/sprite-tags';
 

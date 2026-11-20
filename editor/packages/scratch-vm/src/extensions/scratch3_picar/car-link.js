@@ -88,6 +88,9 @@ class CarLink extends EventEmitter {
         this._pending = {};
         this._pendingTimers = {};
         this._lastSent = {};
+        this._txByOp = {};
+        this._otherTx = 0;
+        this._lastEstopPostAt = null;
         this._lastConfig = null;
         this._subscribers = new Set();
         this._boundVisibility = () => this._onVisibility();
@@ -146,10 +149,12 @@ class CarLink extends EventEmitter {
      * Switch between the shared car and a private simulator; persisted in localStorage picar.mode.
      * @param {string} mode - 'car' or 'sim'
      * @param {string} [world] - sim world id
+     * @param {object} [opts] - options
+     * @param {boolean} [opts.persist] - false keeps picar.mode untouched (an automatic fallback, not a choice)
      */
-    setMode (mode, world) {
+    setMode (mode, world, opts) {
         if (mode !== 'car' && mode !== 'sim') return;
-        this._saveMode(mode);
+        if (!opts || opts.persist !== false) this._saveMode(mode);
         this._worldPref = world || null;
         const conn = this._state.connection;
         if (this._ws && this._ws.readyState === WS_OPEN && (conn === 'open' || conn === 'switching')) {
@@ -183,9 +188,17 @@ class CarLink extends EventEmitter {
         let allowed = conn === 'open' || (conn === 'switching' && P.SWITCHING_OPS.includes(op));
         if (op === 'estop') allowed = true;
         if (!allowed) return null;
+        // A zero speed is always a stop: it takes the bypass path and is never de-duplicated away.
+        if ((op === 'set_speed' || op === 'drive') && fields.speed === 0) {
+            op = 'stop';
+            fields = {};
+        }
         if (this._backpressured() && !P.BACKPRESSURE_OPS.includes(op)) return null;
         if (P.COALESCED_OPS.includes(op)) return this._coalesce(op, fields);
-        if (P.BYPASS_OPS.includes(op)) this._bypass();
+        if (P.BYPASS_OPS.includes(op)) {
+            this._bypass();
+            if (op !== 'move' && this._repeatsLastFrame(op)) return null;
+        }
         return this._transmit(op, fields);
     }
 
@@ -224,16 +237,25 @@ class CarLink extends EventEmitter {
         });
     }
 
-    /** Emergency stop: WebSocket estop + POST /api/estop (keepalive); queued if the socket is not open. */
+    /**
+     * Emergency stop: WebSocket estop + POST /api/estop (keepalive); queued if the socket is not open.
+     * Emits a local {kind: 'estop', local: true} event at once.
+     */
     estop () {
         this._bypass();
-        this._postEstop();
+        const now = this._clock.now();
+        if (this._lastEstopPostAt === null || now - this._lastEstopPostAt >= P.ESTOP_POST_MS) {
+            this._lastEstopPostAt = now;
+            this._postEstop();
+        }
         const ws = this._ws;
         if (ws && ws.readyState === WS_OPEN) {
-            if (this._transmit('estop', {}) === null) this._estopQueued = true;
+            if (!this._repeatsLastFrame('estop') && this._transmit('estop', {}) === null) this._estopQueued = true;
         } else {
             this._estopQueued = true;
         }
+        // The project must stop even when the server's estop event never comes back.
+        this.emit('event', {kind: 'estop', local: true});
     }
 
     /**
@@ -341,7 +363,21 @@ class CarLink extends EventEmitter {
         const id = this._nextId + 1;
         if (!this._rawSend(Object.assign({t: 'cmd', id, op}, fields))) return null;
         this._nextId = id;
+        if (!P.SAFETY_FAMILY_OPS.includes(op)) this._otherTx++;
+        this._txByOp[op] = {at: this._clock.now(), other: this._otherTx};
         return id;
+    }
+
+    /**
+     * Whether a field-less safety op repeats the last one sent, within COALESCE_MS, with no other kind of frame
+     * sent since (stop, pause and estop belong together: an E-STOP press sends both estop and stop): a loop of
+     * "stop motors" must not flood the socket.
+     * @param {string} op - protocol op
+     * @returns {boolean} true to drop it
+     */
+    _repeatsLastFrame (op) {
+        const last = this._txByOp[op];
+        return !!last && last.other === this._otherTx && this._clock.now() - last.at < P.COALESCE_MS;
     }
 
     /** Bypass ops clear pending motion ops (and forget what was last sent, so a repeat is real). */
@@ -368,6 +404,8 @@ class CarLink extends EventEmitter {
         }
         const last = this._lastSent[op];
         if (!last || !shallowEqual(last.fields, fields)) return false;
+        // A zero speed is never dropped (send() turns it into a stop before it gets here).
+        if (fields.speed === 0) return false;
         // The server's drive timeout (guard off) needs a fresh motion command now and then.
         return op !== 'drive' || now - last.at < P.REFRESH_MS;
     }
@@ -396,7 +434,7 @@ class CarLink extends EventEmitter {
         const now = this._clock.now();
         const last = this._lastSent[op];
         const same = op === 'config' ? this._isDuplicate(op, fields, now) : last && shallowEqual(last.fields, fields);
-        if (same) return;
+        if (same && fields.speed !== 0) return;
         this._flush(op, fields, now);
     }
 
@@ -404,6 +442,9 @@ class CarLink extends EventEmitter {
         const id = this._transmit(op, fields);
         if (id === null) return null;
         this._lastSent[op] = {fields, at: now};
+        // drive and set_speed both set the speed: whichever went last owns what the car is doing.
+        if (op === 'drive') delete this._lastSent.set_speed;
+        if (op === 'set_speed') delete this._lastSent.drive;
         if (op === 'config') this._lastConfig = Object.assign({}, this._lastConfig, fields);
         return id;
     }
@@ -492,6 +533,7 @@ class CarLink extends EventEmitter {
         this._watchdog = null;
         this._clearPending();
         this._lastSent = {};
+        this._txByOp = {};
         this._lastConfig = null;
         this._tel = null;
         this._switchFrom = null;
@@ -622,7 +664,9 @@ class CarLink extends EventEmitter {
             return;
         }
         const sha = msg.server && msg.server.sha;
-        if (this._buildSha && sha && sha !== this._buildSha) {
+        // 'dev' (a bundle built outside the release pipeline, or the simulator) never matches: skip the check.
+        const known = v => typeof v === 'string' && v !== '' && v !== 'dev';
+        if (known(this._buildSha) && known(sha) && sha !== this._buildSha) {
             this._fatalReload('sha_mismatch', 'editor and car server versions differ');
             return;
         }
@@ -631,6 +675,7 @@ class CarLink extends EventEmitter {
         this._switchFrom = null;
         this._clearPending();
         this._lastSent = {};
+        this._txByOp = {};
         this._lastConfig = null;
         this._setState({
             connection: 'open',
@@ -653,9 +698,11 @@ class CarLink extends EventEmitter {
             this._estopQueued = false;
             this._transmit('estop', {});
         }
+        const d = this._doc;
+        if (d && (d.visibilityState === 'hidden' || d.hidden === true)) this._pause();
         if (!this._autoSimDone && msg.car_available === false && msg.mode === 'car') {
             this._autoSimDone = true;
-            this.setMode('sim');
+            this.setMode('sim', null, {persist: false});
         }
     }
 
@@ -680,8 +727,9 @@ class CarLink extends EventEmitter {
         const err = {code: msg.code, msg: msg.msg, id: msg.id};
         if (typeof msg.id === 'number' && this._moves.has(msg.id)) {
             this._finishMove(msg.id, String(msg.code));
-        } else if (this._state.connection === 'switching' && this._switchFrom) {
-            // The server refused the mode switch (e.g. sim_busy): stay where we were.
+        } else if (this._state.connection === 'switching' && this._switchFrom && typeof msg.id !== 'number') {
+            // An err without an id while switching: the server refused the mode switch (e.g. sim_busy).
+            // An err that carries an id belongs to a command and leaves the switch pending.
             const back = this._switchFrom;
             this._switchFrom = null;
             this._saveMode(back);

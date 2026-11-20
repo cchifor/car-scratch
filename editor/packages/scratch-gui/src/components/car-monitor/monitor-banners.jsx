@@ -9,6 +9,7 @@ import styles from './car-monitor.css';
 const TEXT = {
     obstacle: messages.bannerObstacle,
     estop: messages.bannerEstop,
+    hwfault: messages.bannerHwFault,
     paused: messages.bannerPaused,
     viewOnly: messages.bannerViewOnly,
     notCalibrated: messages.bannerNotCalibrated,
@@ -21,6 +22,7 @@ const TEXT = {
 
 const ACTION_TEXT = {
     estopReset: messages.bannerEstopReset,
+    hwReset: messages.bannerEstopReset,
     resume: messages.bannerResume,
     take: messages.bannerTakeControl,
     reload: messages.bannerReloadButton

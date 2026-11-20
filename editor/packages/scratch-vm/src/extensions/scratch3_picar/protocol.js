@@ -7,6 +7,9 @@ const PROTOCOL_VERSION = 1;
 /** Ops that bypass the coalescer and clear pending motion ops. */
 const BYPASS_OPS = Object.freeze(['stop', 'estop', 'pause', 'resume', 'move', 'estop_reset']);
 
+/** Ops that mean "make it safe"; a repeat of one is dropped while only these were sent in between. */
+const SAFETY_FAMILY_OPS = Object.freeze(['stop', 'pause', 'estop']);
+
 /** Ops that are de-duplicated and rate limited (per-op latest wins). */
 const COALESCED_OPS = Object.freeze(['drive', 'steer', 'set_speed', 'config']);
 
@@ -22,6 +25,8 @@ const NO_RECONNECT_CODES = Object.freeze([4400, 4409]);
 const BACKOFF_MS = Object.freeze([500, 1000, 2000, 4000, 5000]);
 const JITTER_MS = 250;
 const COALESCE_MS = 50;
+/** At most one REST POST /api/estop per this many ms. */
+const ESTOP_POST_MS = 250;
 /** An identical drive repeat is dropped only while the previous one is younger than this (feeds the drive timeout). */
 const REFRESH_MS = 1000;
 const STALE_FRAME_MS = 2000;
@@ -81,6 +86,7 @@ const estopUrl = wsUrl => {
 module.exports = {
     PROTOCOL_VERSION,
     BYPASS_OPS,
+    SAFETY_FAMILY_OPS,
     COALESCED_OPS,
     BACKPRESSURE_OPS,
     SWITCHING_OPS,
@@ -88,6 +94,7 @@ module.exports = {
     BACKOFF_MS,
     JITTER_MS,
     COALESCE_MS,
+    ESTOP_POST_MS,
     REFRESH_MS,
     STALE_FRAME_MS,
     CONNECT_STALE_MS,

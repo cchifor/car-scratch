@@ -217,7 +217,7 @@ test('command blocks send the documented messages', t => {
     ext.resetPosition();
     t.equal(last().op, 'reset_pose');
     ext.emergencyStop();
-    t.equal(last().op, 'estop');
+    t.equal(ctx.ws.cmds('estop').length, 1);
     t.equal(ctx.fetches.length, 1, 'REST estop too');
     t.end();
 });

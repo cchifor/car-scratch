@@ -55,3 +55,9 @@
     cursor: pointer;
     touch-action: manipulation;
 }
+
+.estop {
+    min-width: 140px;
+    min-height: 64px;
+    font-size: 1.25rem;
+}

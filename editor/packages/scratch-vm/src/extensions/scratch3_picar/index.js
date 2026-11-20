@@ -1,3 +1,4 @@
+/* global __PICAR_BUILD_SHA__ */
 const ArgumentType = require('../../extension-support/argument-type');
 const BlockType = require('../../extension-support/block-type');
 const Cast = require('../../util/cast');
@@ -49,16 +50,26 @@ class Scratch3PiCarBlocks {
         this.armed = false;
         this.link = null;
         this._prevConnection = 'closed';
+        this._prevRole = 'viewer';
+        this._prevMode = null;
+        this._tripped = {estop: false, hw_fault: false};
+        this._dropped = false;
 
         const factory = runtime.picarLinkFactory || Scratch3PiCarBlocks.linkFactory;
         if (factory) {
             this.link = factory(runtime);
         } else if (typeof WebSocket !== 'undefined' && typeof location !== 'undefined') {
-            this.link = new CarLink({url: CarLink.defaultUrl(location), buildSha: globalThis.__PICAR_BUILD_SHA__});
+            this.link = new CarLink({
+                url: CarLink.defaultUrl(location),
+                buildSha: typeof __PICAR_BUILD_SHA__ === 'undefined' ? null : __PICAR_BUILD_SHA__
+            });
         }
 
         if (this.link) {
-            this._prevConnection = this.link.getState().connection;
+            const initial = this.link.getState();
+            this._prevConnection = initial.connection;
+            this._prevRole = initial.role;
+            this._prevMode = initial.mode;
             this.link.on('event', evt => this._onLinkEvent(evt));
             this.link.on('state', state => this._onLinkState(state));
             if (/[?&]picar_debug=1(&|$|#)/.test((typeof location !== 'undefined' && location.search) || '')) {
@@ -113,12 +124,10 @@ class Scratch3PiCarBlocks {
         if (!evt) return;
         switch (evt.kind) {
         case 'estop':
-        case 'hw_fault': {
-            const wasArmed = this.armed;
-            if (this._controlsCar()) this.runtime.stopAll();
-            if (evt.kind === 'estop' && wasArmed) this._startEventHats('estop');
+        case 'hw_fault':
+            // A server event arrives after the state it changed was already acted on (see _onLinkState).
+            if (evt.local === true || !this._tripped[evt.kind]) this._safetyTripped(evt.kind, evt.local === true);
             break;
-        }
         case 'obstacle_stop':
             if (this.armed && this._open()) this._startEventHats('obstacle');
             break;
@@ -126,12 +135,52 @@ class Scratch3PiCarBlocks {
         }
     }
 
+    /**
+     * The car went into estop / hardware fault: stop the project (an operator pressing E-STOP always does).
+     * @param {string} kind - 'estop' or 'hw_fault'
+     * @param {boolean} local - this browser pressed E-STOP
+     */
+    _safetyTripped (kind, local) {
+        const wasArmed = this.armed;
+        if (local || this._controlsCar()) this.runtime.stopAll();
+        if (kind === 'estop' && wasArmed) this._startEventHats('estop');
+    }
+
     _onLinkState (state) {
         const prev = this._prevConnection;
+        const prevRole = this._prevRole;
+        const prevMode = this._prevMode;
         this._prevConnection = state.connection;
+        this._prevRole = state.role;
+        this._prevMode = state.mode;
         const wasUp = prev === 'open' || prev === 'switching';
-        if (wasUp && (state.connection === 'closed' || state.connection === 'reload') && this.armed) {
+        const down = state.connection === 'closed' || state.connection === 'reload';
+        if (wasUp && down && this.armed) {
             this._startEventHats('disconnected');
+        }
+        if (wasUp && down) this._dropped = true;
+
+        // The server starts every acquisition of car control on hold; a running project must not carry on into it.
+        let stop = false;
+        if (state.connection === 'open' && this._dropped) {
+            this._dropped = false;
+            stop = true;
+        }
+        if (prevRole === 'viewer' && state.role === 'controller' && prev !== 'connecting') stop = true;
+        if (prevMode !== null && prevMode !== 'car' && state.mode === 'car') stop = true;
+        if (stop) this.runtime.stopAll();
+
+        // A welcome or tel frame that reports estop / hardware fault for the first time.
+        if (state.safety) {
+            for (const kind of Object.keys(this._tripped)) {
+                const now = Boolean(state.safety[kind]);
+                if (now && !this._tripped[kind]) {
+                    this._tripped[kind] = true;
+                    this._safetyTripped(kind, false);
+                } else if (!now) {
+                    this._tripped[kind] = false;
+                }
+            }
         }
     }
 

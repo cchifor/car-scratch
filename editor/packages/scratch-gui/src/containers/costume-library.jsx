@@ -8,7 +8,9 @@ import {costumeShape} from '../lib/assets-prop-types.js';
 import VM from '@scratch/scratch-vm';
 import mergeDynamicAssets from '../lib/merge-dynamic-assets.js';
 
-import costumeLibraryContent from '../lib/libraries/costumes.json';
+import costumeLibraryContentRaw from '../lib/libraries/costumes.json';
+import {withoutScratchCharacters} from '../lib/picar/scratch-characters.js';
+const costumeLibraryContent = withoutScratchCharacters(costumeLibraryContentRaw);
 import spriteTags from '../lib/libraries/sprite-tags';
 import LibraryComponent from '../components/library/library.jsx';
 import {GUIStoragePropType} from '../gui-config';

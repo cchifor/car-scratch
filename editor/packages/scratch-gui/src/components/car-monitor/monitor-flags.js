@@ -11,6 +11,7 @@ const telemetryFlags = tel => {
     return {
         estop: Boolean(safety.estop),
         hold: Boolean(safety.hold),
+        hwFault: Boolean(safety.hw_fault),
         calibrated: typeof safety.calibrated === 'boolean' ? safety.calibrated : null,
         obstacleStop: typeof safety.obstacle_stop === 'boolean' ? safety.obstacle_stop : null,
         lineOk: typeof line.ok === 'boolean' ? line.ok : null
@@ -52,6 +53,9 @@ const computeBanners = ({state, flags, obstacleFlash, lineFault}) => {
     const f = flags || {};
 
     if (state.mode === 'car' && state.carAvailable === false) add('noCar', 'bad', true);
+    if (f.hwFault || Boolean(state.safety && state.safety.hw_fault)) {
+        add('hwfault', 'bad', false, isController ? 'hwReset' : null);
+    }
     if (f.estop) add('estop', 'bad', false, isController ? 'estopReset' : null);
     else if (f.hold) add('paused', 'warn', false, isController ? 'resume' : null);
     if (obstacleFlash) add('obstacle', 'bad');

@@ -129,7 +129,7 @@ const CarMonitor = ({link}) => {
     }, [state && state.mode, state && state.connection]);
 
     const onAction = useCallback(action => {
-        if (action === 'estopReset') {
+        if (action === 'estopReset' || action === 'hwReset') {
             link.send('estop_reset', {});
         } else if (action === 'resume') {
             link.send('resume', {});

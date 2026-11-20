@@ -16,7 +16,8 @@ import {useCarLink, useCarState} from '../lib/picar/use-car-link.js';
  */
 const PicarGlobal = ({vm}) => {
     useAudioUnlock(vm);
-    const state = useCarState(useCarLink(vm));
+    const link = useCarLink(vm);
+    const state = useCarState(link);
     const [dialog, setDialog] = useState(null);
     useEffect(() => {
         const onRequest = event => setDialog(event.detail);
@@ -26,7 +27,7 @@ const PicarGlobal = ({vm}) => {
     const close = useCallback(() => setDialog(null), []);
     return (
         <React.Fragment>
-            <RotateHint />
+            <RotateHint link={link} />
             {dialog ? (
                 <CarInfoModal
                     kind={dialog}
