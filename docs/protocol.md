@@ -79,7 +79,7 @@ remember to stop.
 | `estop_reset` | – | `ack` | controller only |
 | `resume` | – | `ack` | clears **hold** (sent only by the Resume button and the green flag) |
 | `reset_pose` | – | `ack` | dead-reckoned pose back to `(0, 0, 90)`; in sim: back to the world start |
-| `world` | `id:str` | `ack` + `world` | sim mode only |
+| `world` | `world:str` (world id; `id` is the command id) | `ack` + `world` | sim mode only |
 | `calibrate` | `steer_trim_deg?:float(-20..20)`, `save?:bool` | `ack` | car controller only; `save` persists to calibration.json |
 
 Every `cmd` gets **exactly one** reply: `ack` (with the effective values, e.g. `speed` after limits and

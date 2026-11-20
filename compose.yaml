@@ -1,7 +1,7 @@
 # Car Scratch development, test and simulator stack (everything runs in containers).
 #   docker compose run --rm server-test          # fast Python tests
 #   docker compose run --rm editor-test          # scratch-vm Tap + scratch-gui Jest tests for our code
-#   docker compose up -d sim-server              # http://localhost:8080 (needs out/www from the editor build)
+#   docker compose up -d sim-server              # http://localhost:18080 (needs out/www from the editor build)
 #   docker compose run --rm e2e                  # Playwright against sim-server
 #   docker compose run --rm deploy               # deploy.sh --dry-run; real deploy: ... deploy sh deploy/deploy.sh
 name: car-scratch
@@ -21,8 +21,9 @@ services:
       - "./out/source:/source:ro"
     command: ["python3", "-m", "picar_server", "--port", "8080", "--hardware", "sim",
               "--www", "/www", "--examples", "/examples", "--source", "/source",
-              "--data", "/tmp/car-scratch-data", "--config", "/tmp/car-scratch-config"]
-    ports: ["8080:8080"]
+              "--data", "/tmp/car-scratch-data", "--config", "/tmp/car-scratch-config",
+              "--allow-host", "sim-server"]
+    ports: ["18080:8080"]   # host port 8080 is reserved on the Windows workstation
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/status"]
       interval: 2s
