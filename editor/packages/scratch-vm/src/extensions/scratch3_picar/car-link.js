@@ -105,6 +105,7 @@ class CarLink extends EventEmitter {
             safety: null,
             world: null,
             worlds: [],
+            geometry: null,
             server: null,
             lastError: null
         });
@@ -641,6 +642,7 @@ class CarLink extends EventEmitter {
             safety: msg.safety || null,
             world: null,
             worlds: Array.isArray(msg.worlds) ? msg.worlds : [],
+            geometry: msg.geometry || null,
             server: msg.server || null,
             lastError: null
         });
