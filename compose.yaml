@@ -3,6 +3,7 @@
 #   docker compose run --rm editor-test          # scratch-vm Tap + scratch-gui Jest tests for our code
 #   docker compose up -d sim-server              # http://localhost:8080 (needs out/www from the editor build)
 #   docker compose run --rm e2e                  # Playwright against sim-server
+#   docker compose run --rm deploy               # deploy.sh --dry-run; real deploy: ... deploy sh deploy/deploy.sh
 name: car-scratch
 services:
   server-test:
@@ -28,9 +29,19 @@ services:
       timeout: 2s
       retries: 30
 
+  # Prebuilt deps + sibling packages; our source folders are bind-mounted so edits need no image rebuild.
+  #   docker compose run --rm editor-test                       # all Car Scratch editor tests
+  #   docker compose run --rm editor-test sh -c "cd packages/scratch-vm && npx tap test/unit/extension_picar.js"
   editor-test:
     build: {context: ., dockerfile: docker/editor.Dockerfile, target: test}
-    command: ["sh", "-c", "cd packages/scratch-vm && npx tap test/unit/extension_picar*.js && cd ../scratch-gui && npx jest test/unit/picar"]
+    image: car-scratch-editor-test
+    volumes:
+      - "./editor/packages/scratch-vm/src:/src/editor/packages/scratch-vm/src"
+      - "./editor/packages/scratch-vm/test:/src/editor/packages/scratch-vm/test"
+      - "./editor/packages/scratch-gui/src:/src/editor/packages/scratch-gui/src"
+      - "./editor/packages/scratch-gui/test:/src/editor/packages/scratch-gui/test"
+      - "./examples:/src/examples"
+    command: ["sh", "-c", "cd packages/scratch-vm && npx tap --no-coverage test/unit/extension_picar*.js && cd ../scratch-gui && npx jest test/unit/picar"]
 
   e2e:
     image: mcr.microsoft.com/playwright:v1.65.1-noble
@@ -41,3 +52,15 @@ services:
     environment:
       BASE_URL: http://sim-server:8080
     command: ["sh", "-c", "npm ci --no-audit --no-fund && npx playwright test --output=/out/test-results"]
+
+  # Deploy to the Pi (ssh key dir: PICAR_SSH_DIR, default ~/.ssh). Default command is a dry run, no ssh.
+  deploy:
+    profiles: ["deploy"]
+    build: {context: ., dockerfile: docker/deploy.Dockerfile}
+    volumes:
+      - ".:/repo:ro"
+      - "./out:/repo/out"
+      - "${PICAR_SSH_DIR:-${USERPROFILE:-${HOME}}/.ssh}:/ssh-src:ro"
+    working_dir: /repo
+    environment:
+      PICAR_HOST: ${PICAR_HOST:-192.168.0.209}
