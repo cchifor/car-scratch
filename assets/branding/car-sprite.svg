@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80" role="img" aria-label="Pi Car sprite">
+  <title>Pi Car</title>
+  <!-- antenna -->
+  <line x1="62" y1="14" x2="62" y2="6" stroke="#263238" stroke-width="2"/>
+  <circle cx="62" cy="4" r="3" fill="#FFC107"/>
+  <!-- cabin -->
+  <path d="M30 42 L42 18 Q45 14 50 14 L74 14 Q80 14 83 20 L94 42 Z" fill="#C62828"/>
+  <path d="M40 40 L49 21 L60 21 L60 40 Z" fill="#ECEFF1"/>
+  <path d="M64 21 L76 21 L84 40 L64 40 Z" fill="#ECEFF1"/>
+  <!-- body -->
+  <rect x="8" y="40" width="104" height="22" rx="8" fill="#E53935"/>
+  <!-- wheels (drawn over the body so they read as arches) -->
+  <circle cx="32" cy="60" r="14" fill="#263238"/>
+  <circle cx="88" cy="60" r="14" fill="#263238"/>
+  <circle cx="32" cy="60" r="5" fill="#ECEFF1"/>
+  <circle cx="88" cy="60" r="5" fill="#ECEFF1"/>
+  <!-- ultrasonic eyes on the front bumper -->
+  <circle cx="106" cy="48" r="4.2" fill="#ECEFF1" stroke="#263238" stroke-width="1.5"/>
+  <circle cx="106" cy="48" r="1.6" fill="#263238"/>
+  <circle cx="106" cy="57" r="4.2" fill="#ECEFF1" stroke="#263238" stroke-width="1.5"/>
+  <circle cx="106" cy="57" r="1.6" fill="#263238"/>
+</svg>

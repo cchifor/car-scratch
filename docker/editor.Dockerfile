@@ -11,8 +11,9 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 
 FROM deps AS src
 COPY editor/ /src/editor/
-# scratch-storage and task-herder are consumed through their built dist/; the rest build from source.
-RUN npm run build --workspace=packages/task-herder && npm run build --workspace=packages/scratch-storage
+# Build the sibling packages in workspace order (as the root `npm run build` does): the GUI bundle uses
+# their sources via the "webpack" export condition, but TypeScript and some imports resolve their dist/.
+RUN for p in task-herder scratch-storage scratch-svg-renderer scratch-paint scratch-render scratch-vm; do       npm run build --workspace=packages/$p || exit 1; done
 
 FROM src AS build
 WORKDIR /src/editor/packages/scratch-gui
