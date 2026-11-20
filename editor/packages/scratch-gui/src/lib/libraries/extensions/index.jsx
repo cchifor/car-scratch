@@ -1,6 +1,10 @@
 import React from 'react';
 import {FormattedMessage} from 'react-intl';
 
+import picarIconURL from './picar/picar.png';
+import picarInsetIconURL from './picar/picar-small.svg';
+import picarConnectionIconURL from './picar/picar-illustration.svg';
+
 import musicIconURL from './music/music.png';
 import musicInsetIconURL from './music/music-small.svg';
 
@@ -50,6 +54,28 @@ import faceSensingIconURL from './faceSensing/faceSensing.png';
 import faceSensingInsetIconURL from './faceSensing/faceSensing-small.svg';
 
 export default [
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="Pi Car"
+                description="Name for the 'Pi Car' extension"
+                id="picar.extension.name"
+            />
+        ),
+        extensionId: 'picar',
+        iconURL: picarIconURL,
+        insetIconURL: picarInsetIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Drive the Raspberry Pi car and read its sensors."
+                description="Description for the 'Pi Car' extension"
+                id="picar.extension.description"
+            />
+        ),
+        featured: true,
+        launchPeripheralConnectionFlow: false,
+        connectionIconURL: picarConnectionIconURL
+    },
     {
         name: (
             <FormattedMessage

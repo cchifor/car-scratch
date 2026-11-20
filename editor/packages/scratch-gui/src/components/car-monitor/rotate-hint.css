@@ -1,0 +1,57 @@
+.overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    background: rgba(38, 50, 55, 0.94);
+    color: #FFFFFF;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    text-align: center;
+    padding: 1rem;
+}
+
+.phone {
+    width: 4rem;
+    height: 6.5rem;
+    border: 0.4rem solid #FFFFFF;
+    border-radius: 0.75rem;
+    animation: rotate-phone 2.5s ease-in-out infinite;
+}
+
+@keyframes rotate-phone {
+    0%, 20% {
+        transform: rotate(0deg);
+    }
+
+    60%, 100% {
+        transform: rotate(-90deg);
+    }
+}
+
+.text {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.dismiss {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0 1.5rem;
+    border: 2px solid #FFFFFF;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: #FFFFFF;
+    font: inherit;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    touch-action: manipulation;
+}

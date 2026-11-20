@@ -28,6 +28,8 @@ import FileMenu from './file-menu.jsx';
 import EditMenu from './edit-menu.jsx';
 import ModeMenu from './mode-menu.jsx';
 import AboutMenu from './about-menu.jsx';
+import ExamplesMenu from './examples-menu.jsx';
+import CarEstop from '../../containers/car-estop.jsx';
 
 import {openTipsLibrary, openDebugModal} from '../../reducers/modals';
 import {setPlayer} from '../../reducers/mode';
@@ -65,8 +67,7 @@ import remixIcon from './icon--remix.svg';
 import dropdownCaret from './dropdown-caret.svg';
 import debugIcon from '../debug-modal/icons/icon--debug.svg';
 
-import scratchLogo from './scratch-logo.svg';
-import scratchLogoAndroid from './scratch-logo-android.svg';
+import scratchLogo from './car-scratch-logo.svg';
 import ninetiesLogo from './nineties_logo.svg';
 import catLogo from './cat_logo.svg';
 import prehistoricLogo from './prehistoric-logo.svg';
@@ -100,7 +101,7 @@ const ariaMessages = defineMessages({
     }
 });
 
-const getScratchLogo = platform => (platform === PLATFORM.ANDROID ? scratchLogoAndroid : scratchLogo);
+const getScratchLogo = () => scratchLogo;
 
 const MenuBarItemTooltip = ({
     children,
@@ -335,7 +336,7 @@ class MenuBar extends React.Component {
                         >
                             <img
                                 id="logo_img"
-                                alt="Scratch"
+                                alt="Car Scratch"
                                 className={classNames(styles.scratchLogo, {
                                     [styles.clickable]: typeof this.props.onClickLogo !== 'undefined'
                                 })}
@@ -372,6 +373,7 @@ class MenuBar extends React.Component {
                             restoreOptionMessage={this.restoreOptionMessage}
                             depth={1}
                         />
+                        <ExamplesMenu depth={1} />
                         {this.props.isTotallyNormal && (<ModeMenu
                             onSetMode={this.handleSetMode}
                             modeNow={this.props.modeNow}
@@ -639,6 +641,11 @@ class MenuBar extends React.Component {
                         </React.Fragment>
                     )}
                 </div>
+
+                <CarEstop
+                    vm={this.props.vm}
+                    className={styles.menuBarEstop}
+                />
 
                 {this.props.onClickAbout && (
                     <AboutMenu

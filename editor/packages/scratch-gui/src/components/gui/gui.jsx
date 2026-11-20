@@ -13,6 +13,10 @@ import Renderer from '@scratch/scratch-render';
 import Blocks from '../../containers/blocks.jsx';
 import CostumeTab from '../../containers/costume-tab.jsx';
 import TargetPane from '../../containers/target-pane.jsx';
+import CarMonitor from '../../containers/car-monitor.jsx';
+import PicarGlobal from '../../containers/picar-global.jsx';
+import CarProjectsModal from '../car-projects-modal/car-projects-modal.jsx';
+import StagePaneTabs from '../stage-pane-tabs/stage-pane-tabs.jsx';
 import SoundTab from '../../containers/sound-tab.jsx';
 import StageWrapper from '../../containers/stage-wrapper.jsx';
 import Loader from '../loader/loader.jsx';
@@ -297,6 +301,8 @@ const GUIComponent = props => {
                     {isRendererSupported ? null : (
                         <WebGlModal isRtl={isRtl} />
                     )}
+                    <PicarGlobal vm={vm} />
+                    <CarProjectsModal />
                     {tipsLibraryVisible ? (
                         <TipsLibrary
                             hideTutorialProjects={hideTutorialProjects}
@@ -564,11 +570,16 @@ const GUIComponent = props => {
                                 aria-label={intl.formatMessage(ariaMessages.targetPane)}
                                 element="section"
                             >
-                                <TargetPane
-                                    stageSize={stageSize}
-                                    vm={vm}
-                                    onNewSpriteClick={onNewSpriteClick}
-                                    onNewBackdropClick={onNewLibraryBackdropClick}
+                                <StagePaneTabs
+                                    sprites={
+                                        <TargetPane
+                                            stageSize={stageSize}
+                                            vm={vm}
+                                            onNewSpriteClick={onNewSpriteClick}
+                                            onNewBackdropClick={onNewLibraryBackdropClick}
+                                        />
+                                    }
+                                    monitor={<CarMonitor />}
                                 />
                             </Box>
                         </Box>

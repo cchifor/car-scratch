@@ -8,6 +8,7 @@ import {STAGE_DISPLAY_SIZES} from '../../lib/layout-constants.js';
 import StageHeader from '../../containers/stage-header.jsx';
 import Stage from '../../containers/stage.jsx';
 import Loader from '../loader/loader.jsx';
+import CarEstop from '../../containers/car-estop.jsx';
 
 import styles from './stage-wrapper.css';
 
@@ -65,6 +66,12 @@ const StageWrapperComponent = function (props) {
                         null
                 }
             </Box>
+            {isFullScreen ? (
+                <CarEstop
+                    floating
+                    vm={vm}
+                />
+            ) : null}
             {loading ? (
                 <Loader isFullScreen={isFullScreen} />
             ) : null}

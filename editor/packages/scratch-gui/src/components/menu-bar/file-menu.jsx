@@ -15,6 +15,8 @@ import useMenuNavigation from '../../hooks/use-menu-navigation';
 import sharedMessages from '../../lib/shared-messages';
 
 import {saveProjectAsCopy} from '../../reducers/project-state';
+import {openCarProjectsOpen, openCarProjectsSave} from '../../reducers/modals';
+import carMessages from '../car-projects-modal/messages.js';
 
 const fileMenu = defineMessage({
     id: 'gui.aria.fileMenu',
@@ -30,6 +32,8 @@ const FileMenu = ({
     onClickNew,
     onClickSave,
     onClickSaveAsCopy,
+    onClickOpenFromCar,
+    onClickSaveToCar,
     onClickRemix,
     onStartSelectingFileUpload,
     getSaveToComputerHandler,
@@ -161,6 +165,22 @@ const FileMenu = ({
                         </MenuItem>
                     )}</SB3Downloader>
                 </MenuSection>
+                <MenuSection>
+                    <MenuItem
+                        onClick={onClickOpenFromCar}
+                        isDataMenuItem
+                        onParentKeyDown={handleKeyDownOpenMenu}
+                    >
+                        {intl.formatMessage(carMessages.openMenuItem)}
+                    </MenuItem>
+                    <MenuItem
+                        onClick={onClickSaveToCar}
+                        isDataMenuItem
+                        onParentKeyDown={handleKeyDownOpenMenu}
+                    >
+                        {intl.formatMessage(carMessages.saveMenuItem)}
+                    </MenuItem>
+                </MenuSection>
             </MenuBarMenu>
         </button>
     );
@@ -174,6 +194,8 @@ FileMenu.propTypes = {
     onStartSelectingFileUpload: PropTypes.func.isRequired,
     onClickSave: PropTypes.func,
     onClickSaveAsCopy: PropTypes.func,
+    onClickOpenFromCar: PropTypes.func,
+    onClickSaveToCar: PropTypes.func,
     onClickRemix: PropTypes.func,
     onClickNew: PropTypes.func.isRequired,
     getSaveToComputerHandler: PropTypes.func.isRequired,
@@ -186,7 +208,9 @@ const mapStateToProps = state => ({
 });
 
 const mapDispatchToProps = dispatch => ({
-    onClickSaveAsCopy: () => dispatch(saveProjectAsCopy())
+    onClickSaveAsCopy: () => dispatch(saveProjectAsCopy()),
+    onClickOpenFromCar: () => dispatch(openCarProjectsOpen()),
+    onClickSaveToCar: () => dispatch(openCarProjectsSave())
 });
 
 export default connect(

@@ -1,4 +1,5 @@
 import React from 'react';
+import {FormattedMessage} from 'react-intl';
 import ReactDomClient from 'react-dom/client';
 import {compose} from 'redux';
 
@@ -7,10 +8,23 @@ import GUI from '../containers/gui.jsx';
 import HashParserHOC from '../lib/hash-parser-hoc.jsx';
 import log from '../lib/log.js';
 import {PLATFORM} from '../lib/platform.js';
+import {requestInfoDialog} from '../lib/picar/about-events.js';
+import infoMessages from '../components/car-info-modal/messages.js';
 
-const onClickLogo = () => {
-    window.location = 'https://scratch.mit.edu';
-};
+const aboutMenuItems = [
+    {
+        title: <FormattedMessage {...infoMessages.aboutMenu} />,
+        onClick: () => requestInfoDialog('about')
+    },
+    {
+        title: <FormattedMessage {...infoMessages.sourceMenu} />,
+        onClick: () => window.open('/source/', '_blank', 'noopener')
+    },
+    {
+        title: <FormattedMessage {...infoMessages.safetyMenu} />,
+        onClick: () => requestInfoDialog('safety')
+    }
+];
 
 const handleTelemetryModalCancel = () => {
     log('User canceled telemetry modal');
@@ -79,10 +93,9 @@ export default appTarget => {
             <WrappedGui
                 canEditTitle
                 backpackVisible
-                showComingSoon
                 backpackHost={backpackHost}
                 canSave={false}
-                onClickLogo={onClickLogo}
+                onClickAbout={aboutMenuItems}
             />
     );
 };

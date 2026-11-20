@@ -1,6 +1,8 @@
 const OPEN_MODAL = 'scratch-gui/modals/OPEN_MODAL';
 const CLOSE_MODAL = 'scratch-gui/modals/CLOSE_MODAL';
 
+const MODAL_CAR_PROJECTS_OPEN = 'carProjectsOpen';
+const MODAL_CAR_PROJECTS_SAVE = 'carProjectsSave';
 const MODAL_BACKDROP_LIBRARY = 'backdropLibrary';
 const MODAL_COSTUME_LIBRARY = 'costumeLibrary';
 const MODAL_DEBUG = 'debugModal';
@@ -15,6 +17,8 @@ const MODAL_TIPS_LIBRARY = 'tipsLibrary';
 
 const initialState = {
     [MODAL_BACKDROP_LIBRARY]: false,
+    [MODAL_CAR_PROJECTS_OPEN]: false,
+    [MODAL_CAR_PROJECTS_SAVE]: false,
     [MODAL_COSTUME_LIBRARY]: false,
     [MODAL_DEBUG]: false,
     [MODAL_EXTENSION_LIBRARY]: false,
@@ -57,6 +61,12 @@ const closeModal = function (modal) {
 const openBackdropLibrary = function () {
     return openModal(MODAL_BACKDROP_LIBRARY);
 };
+const openCarProjectsOpen = function () {
+    return openModal(MODAL_CAR_PROJECTS_OPEN);
+};
+const openCarProjectsSave = function () {
+    return openModal(MODAL_CAR_PROJECTS_SAVE);
+};
 const openCostumeLibrary = function () {
     return openModal(MODAL_COSTUME_LIBRARY);
 };
@@ -89,6 +99,12 @@ const openTipsLibrary = function () {
 };
 const closeBackdropLibrary = function () {
     return closeModal(MODAL_BACKDROP_LIBRARY);
+};
+const closeCarProjectsOpen = function () {
+    return closeModal(MODAL_CAR_PROJECTS_OPEN);
+};
+const closeCarProjectsSave = function () {
+    return closeModal(MODAL_CAR_PROJECTS_SAVE);
 };
 const closeCostumeLibrary = function () {
     return closeModal(MODAL_COSTUME_LIBRARY);
@@ -124,6 +140,8 @@ export {
     reducer as default,
     initialState as modalsInitialState,
     openBackdropLibrary,
+    openCarProjectsOpen,
+    openCarProjectsSave,
     openCostumeLibrary,
     openDebugModal,
     openExtensionLibrary,
@@ -135,6 +153,8 @@ export {
     openTipsLibrary,
     openConnectionModal,
     closeBackdropLibrary,
+    closeCarProjectsOpen,
+    closeCarProjectsSave,
     closeCostumeLibrary,
     closeDebugModal,
     closeExtensionLibrary,
