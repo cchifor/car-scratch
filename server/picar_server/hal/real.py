@@ -113,7 +113,8 @@ class _HardwareBase:
     def inhibit_forward(self) -> None:
         """Latch the inhibit, then stop, so no forward write can slip in between."""
         self._inhibit = True
-        self.stop_motors()
+        if not self.stop_motors() and self._latch_cb:
+            self._latch_cb("stop_failed")
 
     def clear_inhibit(self) -> None:
         self._inhibit = False

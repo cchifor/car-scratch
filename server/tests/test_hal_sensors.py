@@ -99,15 +99,24 @@ def test_single_miss_among_three_still_answers():
 def test_ping_with_busy_wait_gap_over_1ms_is_discarded():
     b, bus, gpio, clock = make()
     gpio.queue(gpio.echo_cm(100), gpio.echo_cm(50), gpio.echo_cm(52))
-    clock.gap_after(5, 0.002)                            # stall inside the first ping's wait loop
+    clock.gap_after(60, 0.002)                           # stall while the first ping's echo is high
     s = b.hub.read()
     assert s.dist_state == "ok" and abs(s.dist_cm - 51) < 0.3     # median of the two undisturbed pings
+
+
+def test_gap_before_the_echo_starts_is_tolerated():
+    # A late-seen rising edge can only shorten the measured echo (reads closer), so the ping is kept.
+    b, bus, gpio, clock = make()
+    gpio.default = gpio.echo_cm(100)
+    clock.gap_after(5, 0.0003)                           # stall inside the wait-for-echo loop
+    v = b.hub.us.ping()
+    assert v is not None and v <= 100.5
 
 
 def test_all_pings_discarded_gives_none_sample():
     b, bus, gpio, clock = make()
     gpio.default = gpio.echo_cm(100)
-    clock.gap_after(5, 0.002)
+    clock.gap_after(60, 0.002)                           # stall while the echo is high: timing untrustworthy
     assert b.hub.us.ping() is None
 
 

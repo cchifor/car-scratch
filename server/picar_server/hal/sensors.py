@@ -46,22 +46,25 @@ class Ultrasonic:
         c.sleep(0.00001)
         g.output(p, 0)
         g.setup(p, g.IN)
-        t0 = prev = c.monotonic()
-        gap = False
+        t0 = c.monotonic()
+        # A late-detected rising edge only shortens the echo (reads closer: the safe side), so gaps while
+        # waiting for it are tolerated. A late-detected falling edge lengthens it (reads farther: unsafe),
+        # so any gap while the echo is high discards the ping, and the end time is taken inside the loop.
         while g.input(p) == 0:
-            now = c.monotonic()
-            gap = gap or now - prev > MAX_GAP_S
-            prev = now
-            if now - t0 > ECHO_START_TIMEOUT_S:
+            if c.monotonic() - t0 > ECHO_START_TIMEOUT_S:
                 return None
         start = prev = c.monotonic()
-        while g.input(p) == 1:
+        gap = False
+        while True:
+            high = g.input(p) == 1
             now = c.monotonic()
             gap = gap or now - prev > MAX_GAP_S
             prev = now
+            if not high:
+                break
             if now - start > ECHO_STUCK_S:
                 return None
-        dur = c.monotonic() - start
+        dur = now - start
         if gap:
             return None
         if dur > ECHO_FAR_S:
