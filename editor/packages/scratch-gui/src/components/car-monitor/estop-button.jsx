@@ -12,9 +12,10 @@ import styles from './car-monitor.css';
  * @param {object} props - props
  * @param {?object} props.link - the CarLink
  * @param {string} [props.className] - extra class
+ * @param {boolean} [props.latched] - the e-stop is latched: show it
  * @returns {React.Element} the button
  */
-const EStopButton = ({link, className}) => {
+const EStopButton = ({link, className, latched}) => {
     const intl = useIntl();
     const fire = useCallback(() => {
         if (link) link.estop();
@@ -30,8 +31,10 @@ const EStopButton = ({link, className}) => {
     return (
         <button
             type="button"
-            className={classNames(styles.estop, className)}
+            className={classNames(styles.estop, {[styles.estopLatched]: latched}, className)}
             aria-label={intl.formatMessage(messages.estopAria)}
+            aria-pressed={latched ? true : null}
+            title={latched ? intl.formatMessage(messages.estopLatchedTitle) : null}
             onPointerDown={onPointerDown}
             onClick={onClick}
         >
@@ -42,6 +45,7 @@ const EStopButton = ({link, className}) => {
 
 EStopButton.propTypes = {
     className: PropTypes.string,
+    latched: PropTypes.bool,
     link: PropTypes.shape({estop: PropTypes.func})
 };
 

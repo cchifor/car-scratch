@@ -46,6 +46,12 @@ const Banner = ({banner, onAction, className}) => (
     >
         <span className={styles.bannerText}>
             <FormattedMessage {...TEXT[banner.id]} />
+            {banner.id === 'estop' && !banner.action ? (
+                <span className={styles.bannerHint}>
+                    {' — '}
+                    <FormattedMessage {...messages.bannerEstopViewerHint} />
+                </span>
+            ) : null}
         </span>
         {banner.action ? (
             <button

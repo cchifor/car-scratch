@@ -91,6 +91,26 @@ const messages = defineMessages({
         defaultMessage: 'Reset',
         description: 'Button that clears the emergency stop'
     },
+    bannerEstopViewerHint: {
+        id: 'picar.bannerEstopViewerHint',
+        defaultMessage: 'Only the driver can reset it',
+        description: 'Banner hint shown to a view-only session: it cannot clear the emergency stop'
+    },
+    estopReset: {
+        id: 'picar.estop.reset',
+        defaultMessage: 'Reset',
+        description: 'Button next to E-STOP that clears a latched emergency stop'
+    },
+    estopResetAria: {
+        id: 'picar.estop.resetAria',
+        defaultMessage: 'Reset emergency stop',
+        description: 'Accessibility label of the reset button next to E-STOP'
+    },
+    estopLatchedTitle: {
+        id: 'picar.estop.latchedTitle',
+        defaultMessage: 'E-STOP is on',
+        description: 'Tooltip of the E-STOP button while the emergency stop is latched'
+    },
     bannerPaused: {
         id: 'picar.banner.paused',
         defaultMessage: 'PAUSED',
