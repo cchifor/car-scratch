@@ -16,6 +16,8 @@ $CarHost = if ($env:CAR_HOST) { $env:CAR_HOST } else { 'picar.local' }
 $Repo = Split-Path -Parent $PSScriptRoot
 $cmd = if ($args.Count -gt 0) { [string]$args[0] } else { 'watch' }
 $rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+# a terminal for the dashboards and keys; plain output when redirected or scripted
+$Tty = if ([Console]::IsInputRedirected) { @() } else { @('-t') }
 
 switch ($cmd) {
     'web'    { Start-Process "http://${CarHost}:8080/"; break }
@@ -29,8 +31,8 @@ switch ($cmd) {
         } finally { Pop-Location }
         break
     }
-    'wifi'   { ssh -t "carops@$CarHost" car wifi @rest; break }
+    'wifi'   { ssh @Tty "carops@$CarHost" car wifi @rest; break }
     { $_ -in 'help', '-h', '--help' } { Get-Help $PSCommandPath; break }
-    default  { ssh -t "c4@$CarHost" car $cmd @rest }
+    default  { ssh @Tty "c4@$CarHost" car $cmd @rest }
 }
 exit $LASTEXITCODE

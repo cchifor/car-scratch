@@ -40,13 +40,17 @@ fi
 if command -v nmcli >/dev/null 2>&1; then
     WIFI=$(nmcli -t -f NAME,TYPE connection show --active | awk -F: '$2 ~ /wireless/ {print $1; exit}')
     if [ -n "$WIFI" ]; then
-        if [ "$(nmcli -g 802-11-wireless.powersave connection show "$WIFI")" != "2" ]; then
-            nmcli connection modify "$WIFI" 802-11-wireless.powersave 2
-            note "WiFi power-save disabled in NetworkManager connection '$WIFI' (fully effective after reconnect/reboot)"
-        fi
+        # nmcli -g prints the name ("disable"), older releases the number ("2")
+        case "$(nmcli -g 802-11-wireless.powersave connection show "$WIFI")" in
+            2|disable) ;;
+            *)  nmcli connection modify "$WIFI" 802-11-wireless.powersave 2
+                note "WiFi power-save disabled in NetworkManager connection '$WIFI' (fully effective after reconnect/reboot)" ;;
+        esac
         if command -v iw >/dev/null 2>&1; then
             IFACE=$(iw dev | awk '$1 == "Interface" {print $2; exit}')
-            [ -n "$IFACE" ] && iw dev "$IFACE" set power_save off 2>/dev/null && note "iw: power_save off on $IFACE (live)"
+            if [ -n "$IFACE" ] && iw dev "$IFACE" get power_save 2>/dev/null | grep -q ': on'; then
+                iw dev "$IFACE" set power_save off 2>/dev/null && note "iw: power_save off on $IFACE (live)"
+            fi
         fi
     else
         echo "no active WiFi connection found; skipped power-save"

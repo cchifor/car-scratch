@@ -13,6 +13,7 @@
 set -eu
 
 HOST=${CAR_HOST:-picar.local}
+TTY=""; [ -t 0 ] && TTY=-t   # a terminal for the dashboards and keys; plain output when piped or scripted
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 cmd=${1:-watch}
 [ $# -gt 0 ] && shift
@@ -32,7 +33,7 @@ case "$cmd" in
             exec docker compose --profile deploy run --rm deploy
         fi
         exec docker compose --profile deploy run --rm deploy sh deploy/deploy.sh ;;
-    wifi) exec ssh -t "carops@$HOST" car wifi "$@" ;;
+    wifi) exec ssh $TTY "carops@$HOST" car wifi "$@" ;;
     help|-h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) exec ssh -t "c4@$HOST" car "$cmd" "$@" ;;
+    *) exec ssh $TTY "c4@$HOST" car "$cmd" "$@" ;;
 esac
