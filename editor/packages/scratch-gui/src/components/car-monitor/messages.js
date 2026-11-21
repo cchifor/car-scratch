@@ -61,6 +61,21 @@ const messages = defineMessages({
         defaultMessage: 'Stage mirror',
         description: 'Toggle that mirrors the car on the Scratch stage'
     },
+    clearMapShort: {
+        id: 'picar.monitor.clearMapShort',
+        defaultMessage: 'Clear map',
+        description: 'Short label of the clear map button on the canvas'
+    },
+    resetShort: {
+        id: 'picar.monitor.resetShort',
+        defaultMessage: 'Reset',
+        description: 'Short label of the reset position button on the canvas'
+    },
+    mirrorShort: {
+        id: 'picar.monitor.mirrorShort',
+        defaultMessage: 'Mirror',
+        description: 'Short label of the stage mirror toggle on the canvas'
+    },
     stageMirrorOn: {
         id: 'picar.monitor.stageMirrorOn',
         defaultMessage: 'on',

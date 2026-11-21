@@ -115,10 +115,9 @@ ViewSwitch.propTypes = {
  * The Pi Car pane: header (mode, world, status, E-STOP), the animated canvas and the banners.
  * @param {object} props - props
  * @param {object} props.link - the CarLink (docs/contracts.md section 5)
- * @param {?object} [props.vm] - the scratch-vm (used to load the Pen extension for the stage mirror)
  * @returns {React.Element} the monitor
  */
-const CarMonitor = ({link, vm}) => {
+const CarMonitor = ({link}) => {
     const intl = useIntl();
     const state = useCarState(link);
     const [flags, setFlags] = useState(() => telemetryFlags(link.getTelemetry()));
@@ -199,16 +198,15 @@ const CarMonitor = ({link, vm}) => {
         setView(next);
         writeSetting(VIEW_KEY, next);
     }, []);
-    const onClearMap = useCallback(() => setClearToken(n => n + 1), []);
+    const onClearMap = useCallback(() => {
+        setClearToken(n => n + 1);
+        if (typeof link.clearTrail === 'function') link.clearTrail();
+    }, [link]);
     const onResetPosition = useCallback(() => link.send('reset_pose', {}), [link]);
     const onStageMirror = useCallback(() => {
         const current = link.getState();
-        const turnOn = !(current && current.stageMirror);
-        if (turnOn && vm && vm.extensionManager && !vm.extensionManager.isExtensionLoaded('pen')) {
-            vm.extensionManager.loadExtensionURL('pen');
-        }
-        link.setStageMirror(turnOn);
-    }, [link, vm]);
+        link.setStageMirror(!(current && current.stageMirror));
+    }, [link]);
 
     const togglePower = useCallback(() => setPowerOpen(open => !open), []);
 
@@ -254,7 +252,7 @@ const CarMonitor = ({link, vm}) => {
                         ))}
                     </select>
                 ) : null}
-                {state ? (
+                {state && state.mode === 'car' ? (
                     <ViewSwitch
                         view={view}
                         onChange={onView}
@@ -268,40 +266,6 @@ const CarMonitor = ({link, vm}) => {
                     />
                     <StatusChip state={state} />
                 </div>
-            </div>
-            <div
-                className={styles.toolbar}
-                role="group"
-                aria-label={intl.formatMessage(messages.toolsAria)}
-            >
-                <button
-                    type="button"
-                    className={styles.toolButton}
-                    onClick={onClearMap}
-                >
-                    <FormattedMessage {...messages.clearMap} />
-                </button>
-                {canDrive ? (
-                    <button
-                        type="button"
-                        className={styles.toolButton}
-                        onClick={onResetPosition}
-                    >
-                        <FormattedMessage {...messages.resetPosition} />
-                    </button>
-                ) : null}
-                {hasMirror ? (
-                    <button
-                        type="button"
-                        className={styles.toolButton}
-                        aria-pressed={mirrorOn}
-                        onClick={onStageMirror}
-                    >
-                        <FormattedMessage {...messages.stageMirror} />
-                        {' '}
-                        <FormattedMessage {...(mirrorOn ? messages.stageMirrorOn : messages.stageMirrorOff)} />
-                    </button>
-                ) : null}
             </div>
             {powerOpen && flags && flags.powerSource ? <PowerDetails flags={flags} /> : null}
             <MonitorBanners
@@ -318,6 +282,41 @@ const CarMonitor = ({link, vm}) => {
                     viewMode={view}
                     clearToken={clearToken}
                 />
+                <div
+                    className={styles.toolbar}
+                    role="group"
+                    aria-label={intl.formatMessage(messages.toolsAria)}
+                >
+                    <button
+                        type="button"
+                        className={styles.toolButton}
+                        aria-label={intl.formatMessage(messages.clearMap)}
+                        onClick={onClearMap}
+                    >
+                        <FormattedMessage {...messages.clearMapShort} />
+                    </button>
+                    {canDrive ? (
+                        <button
+                            type="button"
+                            className={styles.toolButton}
+                            aria-label={intl.formatMessage(messages.resetPosition)}
+                            onClick={onResetPosition}
+                        >
+                            <FormattedMessage {...messages.resetShort} />
+                        </button>
+                    ) : null}
+                    {hasMirror ? (
+                        <button
+                            type="button"
+                            className={styles.toolButton}
+                            aria-label={intl.formatMessage(messages.stageMirror)}
+                            aria-pressed={mirrorOn}
+                            onClick={onStageMirror}
+                        >
+                            <FormattedMessage {...messages.mirrorShort} />
+                        </button>
+                    ) : null}
+                </div>
                 <ObstacleOverlay banners={banners} />
             </div>
         </section>
@@ -332,17 +331,12 @@ CarMonitor.propTypes = {
         getTelemetry: PropTypes.func.isRequired,
         on: PropTypes.func.isRequired,
         removeListener: PropTypes.func.isRequired,
+        clearTrail: PropTypes.func,
         send: PropTypes.func,
         setMode: PropTypes.func,
         setStageMirror: PropTypes.func,
         subscribe: PropTypes.func.isRequired
-    }).isRequired,
-    vm: PropTypes.shape({
-        extensionManager: PropTypes.shape({
-            isExtensionLoaded: PropTypes.func,
-            loadExtensionURL: PropTypes.func
-        })
-    })
+    }).isRequired
 };
 
 export default CarMonitor;

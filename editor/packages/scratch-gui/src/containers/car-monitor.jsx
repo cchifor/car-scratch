@@ -16,10 +16,7 @@ const CarMonitor = ({vm}) => {
     const link = useCarLink(vm);
     if (!link) return null;
     return (
-        <CarMonitorComponent
-            link={link}
-            vm={vm}
-        />
+        <CarMonitorComponent link={link} />
     );
 };
 

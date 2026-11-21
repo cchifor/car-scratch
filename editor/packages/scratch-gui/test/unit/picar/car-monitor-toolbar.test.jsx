@@ -5,13 +5,6 @@ import {renderWithIntl} from '../../helpers/intl-helpers.jsx';
 import CarMonitor from '../../../src/components/car-monitor/car-monitor.jsx';
 import {createMockLink} from './mock-link.js';
 
-const makeVm = (loaded = false) => ({
-    extensionManager: {
-        isExtensionLoaded: jest.fn(() => loaded),
-        loadExtensionURL: jest.fn()
-    }
-});
-
 describe('CarMonitor toolbar', () => {
     beforeEach(() => {
         jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
@@ -24,59 +17,55 @@ describe('CarMonitor toolbar', () => {
     test('Reset position sends reset_pose for a controller', () => {
         const link = createMockLink();
         renderWithIntl(<CarMonitor link={link} />);
-        fireEvent.click(screen.getByText('Reset position'));
+        fireEvent.click(screen.getByLabelText('Reset position'));
         expect(link.send).toHaveBeenCalledWith('reset_pose', {});
     });
 
     test('Reset position is hidden for a viewer', () => {
         const link = createMockLink({role: 'viewer'});
         renderWithIntl(<CarMonitor link={link} />);
-        expect(screen.queryByText('Reset position')).toBeNull();
-        expect(screen.getByText('Clear map')).toBeTruthy();
+        expect(screen.queryByLabelText('Reset position')).toBeNull();
+        expect(screen.getByLabelText('Clear map')).toBeTruthy();
     });
 
-    test('Clear map sends nothing to the car', () => {
-        const link = createMockLink();
+    test('Clear map sends nothing to the car and calls clearTrail when present', () => {
+        const link = createMockLink({}, {clearTrail: true});
         renderWithIntl(<CarMonitor link={link} />);
         act(() => link.emitTelemetry());
-        fireEvent.click(screen.getByText('Clear map'));
+        fireEvent.click(screen.getByLabelText('Clear map'));
         expect(link.send).not.toHaveBeenCalled();
+        expect(link.clearTrail).toHaveBeenCalledTimes(1);
+    });
+
+    test('Clear map works when the link has no clearTrail', () => {
+        const link = createMockLink();
+        renderWithIntl(<CarMonitor link={link} />);
+        expect(() => fireEvent.click(screen.getByLabelText('Clear map'))).not.toThrow();
     });
 
     test('Stage mirror is hidden when the link has no setStageMirror', () => {
         const link = createMockLink();
         renderWithIntl(<CarMonitor link={link} />);
-        expect(screen.queryByText(/Stage mirror/)).toBeNull();
+        expect(screen.queryByLabelText('Stage mirror')).toBeNull();
     });
 
-    test('Stage mirror turns on, loading Pen when it is missing', () => {
+    test('Stage mirror toggles on and off', () => {
         const link = createMockLink({stageMirror: false}, {stageMirror: true});
-        const vm = makeVm(false);
-        renderWithIntl(<CarMonitor
-            link={link}
-            vm={vm}
-        />);
-        const button = screen.getByText(/Stage mirror/).closest('button');
+        renderWithIntl(<CarMonitor link={link} />);
+        const button = screen.getByLabelText('Stage mirror');
         expect(button.getAttribute('aria-pressed')).toBe('false');
         fireEvent.click(button);
-        expect(vm.extensionManager.loadExtensionURL).toHaveBeenCalledWith('pen');
         expect(link.setStageMirror).toHaveBeenCalledWith(true);
+        act(() => link.setState({stageMirror: true}));
+        expect(screen.getByLabelText('Stage mirror').getAttribute('aria-pressed')).toBe('true');
+        fireEvent.click(screen.getByLabelText('Stage mirror'));
+        expect(link.setStageMirror).toHaveBeenLastCalledWith(false);
     });
 
-    test('Stage mirror does not reload Pen, and turns off without touching it', () => {
-        const link = createMockLink({stageMirror: false}, {stageMirror: true});
-        const vm = makeVm(true);
-        renderWithIntl(<CarMonitor
-            link={link}
-            vm={vm}
-        />);
-        fireEvent.click(screen.getByText(/Stage mirror/).closest('button'));
-        expect(vm.extensionManager.loadExtensionURL).not.toHaveBeenCalled();
-        act(() => link.setState({stageMirror: true}));
-        const button = screen.getByText(/Stage mirror/).closest('button');
-        expect(button.getAttribute('aria-pressed')).toBe('true');
-        fireEvent.click(button);
-        expect(link.setStageMirror).toHaveBeenLastCalledWith(false);
+    test('Room | Follow is shown only in Car mode', () => {
+        const link = createMockLink({mode: 'sim'});
+        renderWithIntl(<CarMonitor link={link} />);
+        expect(screen.queryByText('Room')).toBeNull();
     });
 
     test('Room is the default view and Follow persists', () => {
