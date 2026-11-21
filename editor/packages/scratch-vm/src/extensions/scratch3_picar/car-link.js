@@ -203,8 +203,14 @@ class CarLink extends EventEmitter {
         if (this._backpressured() && !P.BACKPRESSURE_OPS.includes(op)) return null;
         if (P.COALESCED_OPS.includes(op)) return this._coalesce(op, fields);
         if (P.BYPASS_OPS.includes(op)) {
-            this._bypass();
-            if (op !== 'move' && this._repeatsLastFrame(op)) return null;
+            const after = this._bypass(op);
+            if (op !== 'move' && this._repeatsLastFrame(op)) {
+                this._sendAfter(after);
+                return null;
+            }
+            const id = this._transmit(op, fields);
+            this._sendAfter(after);
+            return id;
         }
         return this._transmit(op, fields);
     }
@@ -232,7 +238,7 @@ class CarLink extends EventEmitter {
                 speed: Math.round(P.clamp(speed, 0, 100)),
                 ms: Math.round(P.clamp(ms, 1, P.MOVE_MS_MAX, 1))
             };
-            this._bypass();
+            this._bypass('move');
             const id = this._transmit('move', fields);
             if (id === null) {
                 resolve('disconnected');
@@ -249,7 +255,7 @@ class CarLink extends EventEmitter {
      * Emits a local {kind: 'estop', local: true} event at once.
      */
     estop () {
-        this._bypass();
+        this._bypass('estop');
         const now = this._clock.now();
         const since = this._lastEstopPostAt === null ? null : now - this._lastEstopPostAt;
         if (since === null || since < 0 || since >= P.ESTOP_POST_MS) {
@@ -405,14 +411,39 @@ class CarLink extends EventEmitter {
      * steers (on-car finding 2026-11-21: the figure eight drove straight). Also forgets what was last sent, so
      * a repeat is real.
      */
-    _bypass () {
+    _bypass (op) {
         this._dropPending('drive');
         this._dropPending('set_speed');
-        for (const op of SETTING_OPS) {
-            if (op in this._pending) this._flushPending(op);
+        let after = [];
+        if (op === 'estop') {
+            // E-STOP halts everything and goes out first: pending settings are dropped
+        } else if (op === 'stop' || op === 'pause') {
+            // a stop is never delayed behind a setting (a steer is an I2C write on the car): send them after it
+            after = SETTING_OPS.filter(s => s in this._pending).map(s => [s, this._pending[s]]);
+        } else {
+            // move / resume / estop_reset: the setting must apply before the motion
+            for (const s of SETTING_OPS) {
+                if (s in this._pending) this._flushPending(s);
+            }
         }
         this._clearPending();
         this._bypassMemory();
+        return after;
+    }
+
+    /**
+     * Sends settings taken from the coalescer by _bypass, after the stop they waited behind.
+     * @param {Array} after - [op, fields] pairs
+     */
+    _sendAfter (after) {
+        for (const [op, fields] of after) {
+            const now = this._clock.now();
+            const last = this._lastSent[op];
+            const same = op === 'config' ?
+                this._isDuplicate(op, fields, now) :
+                last && shallowEqual(last.fields, fields);
+            if (!same) this._flush(op, fields, now);
+        }
     }
 
     _bypassMemory () {
@@ -470,6 +501,8 @@ class CarLink extends EventEmitter {
 
     _flushPending (op) {
         const fields = this._pending[op];
+        // also called directly (by _bypass): cancel the scheduled flush, or it would fire later for a newer value
+        if (op in this._pendingTimers) this._clock.clearTimeout(this._pendingTimers[op]);
         delete this._pending[op];
         delete this._pendingTimers[op];
         if (!fields || this._state.connection !== 'open' || this._backpressured()) return;

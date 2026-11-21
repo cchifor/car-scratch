@@ -169,8 +169,8 @@ test('stop/estop/pause/resume/move/estop_reset bypass the coalescer: pending mot
         t.ok(ctx.link.send(op) > 0, `${op} sent immediately`);
     }
     ctx.clock.advance(500);
-    t.same(ws.cmds().map(c => c.op), ['drive', 'steer', 'steer', 'stop', 'pause', 'resume', 'estop_reset'],
-        'the pending drive was dropped; the pending steer went out before the stop');
+    t.same(ws.cmds().map(c => c.op), ['drive', 'steer', 'stop', 'steer', 'pause', 'resume', 'estop_reset'],
+        'the pending drive was dropped; the pending steer went out right AFTER the stop (never delays it)');
     t.equal(ws.cmds('steer')[1].angle, 9, 'with the latest angle');
     // after a stop the same drive is a real command again
     ctx.link.send('drive', {dir: 'forward', speed: 50});
@@ -416,9 +416,39 @@ test('a config pending in the coalescer goes out before a stop; a pending drive 
     ctx.link.send('drive', {dir: 'forward', speed: 70});
     ctx.link.send('stop');
     ctx.clock.advance(500);
-    t.same(ws.cmds().map(c => c.op), ['config', 'drive', 'config', 'stop']);
+    t.same(ws.cmds().map(c => c.op), ['config', 'drive', 'stop', 'config'], 'the stop first, then the setting');
     t.equal(ws.cmds('config')[1].stop_cm, 40);
     t.equal(ws.cmds('drive').length, 1, 'the pending drive (70) was superseded by the stop');
+    t.end();
+});
+
+test('E-STOP goes out first and drops pending settings and motion', t => {
+    const ctx = makeLink(CarLink);
+    const ws = connect(ctx);
+    ctx.link.send('steer', {angle: 0});
+    ctx.link.send('steer', {angle: 25});
+    ctx.link.send('drive', {dir: 'forward', speed: 50});
+    ctx.link.send('drive', {dir: 'forward', speed: 70});
+    ctx.link.estop();
+    ctx.clock.advance(500);
+    t.same(ws.cmds().map(c => c.op), ['steer', 'drive', 'estop']);
+    t.end();
+});
+
+test('a setting flushed early by a move does not leave its timer to flush a newer one too soon', t => {
+    const ctx = makeLink(CarLink);
+    const ws = connect(ctx);
+    ctx.link.send('steer', {angle: 0}); // t=0 sent
+    ctx.clock.advance(10);
+    ctx.link.send('steer', {angle: -30}); // pending, due t=50
+    ctx.clock.advance(10);
+    ctx.link.move('forward', 40, 1000); // t=20: -30 goes out before the move
+    ctx.clock.advance(10);
+    ctx.link.send('steer', {angle: 10}); // t=30: pending, due t=70 (50 ms after t=20)
+    ctx.clock.advance(25); // t=55: the old t=50 timer must not fire it
+    t.same(ws.cmds('steer').map(c => c.angle), [0, -30]);
+    ctx.clock.advance(20); // t=75
+    t.same(ws.cmds('steer').map(c => c.angle), [0, -30, 10]);
     t.end();
 });
 
