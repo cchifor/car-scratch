@@ -54,12 +54,16 @@ class Ultrasonic:
     def __init__(self, gpio, clock, pin: int = US_PIN):
         self.gpio, self.clock, self.pin = gpio, clock, pin
         self._busy_since: Optional[float] = None   # start of an echo still high at ECHO_STUCK_S (pin left as input)
+        self.busy_started = False                  # the last ping() began a long cycle (not: found the module busy)
+        self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
+        self.echo_cm: Optional[float] = None       # measure(): closest echo heard
 
     def ping(self):
         """cm; FAR for an echo ending between 12 and 40 ms; BUSY while the module is in its long no-echo cycle;
         None for no valid ping (no echo, a line high for longer than any module cycle, or a busy-wait gap above
         1 ms while the echo is high, which makes the timing untrustworthy)."""
         g, c, p = self.gpio, self.clock, self.pin
+        self.busy_started = False
         if self._busy_since is not None:
             # Never trigger while the module holds the line high: it ignores triggers until its cycle ends, and
             # driving the pin low would fight the module's output. Report busy until the line drops; a line high
@@ -91,6 +95,7 @@ class Ultrasonic:
                 break
             if now - start > ECHO_STUCK_S:
                 self._busy_since = start       # the pin stays an input; the next ping checks the line first
+                self.busy_started = True
                 return BUSY
         dur = now - start
         if gap:
@@ -105,11 +110,18 @@ class Ultrasonic:
         lower one counts (median_low): averaging FAR (999) with a real 10 cm echo would report 505 cm."""
         need = 2 if n >= 3 else 1
         vals: list[float] = []
+        self.clear_t = self.echo_cm = None
         for _ in range(n):
             v = self.ping()
             if v is BUSY:
+                if self.busy_started:                      # nothing heard for 40 ms: a "nothing there" reading
+                    self.clear_t = self.clock.monotonic()
                 return statistics.median_low(vals) if len(vals) >= need else BUSY
             if v is not None:
+                if v >= FAR:
+                    self.clear_t = self.clock.monotonic()
+                else:
+                    self.echo_cm = v if self.echo_cm is None else min(self.echo_cm, v)
                 vals.append(v)
         if len(vals) < need:
             return None
@@ -127,6 +139,8 @@ class SensorHub:
         self.us = Ultrasonic(gpio, clock, us_pin)
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
+        self.clear_t: Optional[float] = None       # this sample's "nothing there" time (D7), see Sample.clear_t
+        self.echo_cm: Optional[float] = None       # this sample's closest echo, see Sample.echo_cm
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -157,6 +171,8 @@ class SensorHub:
         forward = l > 0 or r > 0
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
+        self.echo_cm = self.us.echo_cm
+        self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
         if v is BUSY:
             # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
             # its usual answer: 59-75 % of pings, measured). No reading this sample, but not a fault: it neither
@@ -330,4 +346,4 @@ class SensorHub:
         cm, state = self._read_distance()
         return Sample(t=self.clock.monotonic(), dist_cm=cm, dist_state=state,
                       line_raw=self._read_line(), light_raw=self._read_light(),
-                      line_skipped=self.line_skipped)
+                      line_skipped=self.line_skipped, clear_t=self.clear_t, echo_cm=self.echo_cm)

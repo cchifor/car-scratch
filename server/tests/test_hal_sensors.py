@@ -159,6 +159,44 @@ def test_valid_pings_then_busy_never_average_with_far():
     assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
 
 
+def test_far_sample_is_a_no_echo_observation():
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.027)
+    s = b.hub.read()
+    assert s.dist_state == "far" and s.clear_t is not None and s.echo_cm is None
+    assert s.clear_t <= s.t
+
+
+def test_only_the_start_of_a_long_cycle_is_a_no_echo_observation():
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.027)
+    b.hub.read()
+    gpio.queue(gpio.long_cycle())
+    clock.advance(0.04)
+    s = b.hub.read()
+    assert s.dist_state == "none" and s.clear_t is not None      # nothing heard for 40 ms: the cycle began
+    clock.advance(0.1)
+    s = b.hub.read()
+    assert s.dist_state == "none" and s.clear_t is None          # still busy: no new observation
+
+
+def test_any_echo_heard_cancels_the_no_echo_observation():
+    b, bus, gpio, clock = make()
+    far = (0.0003, 0.027)
+    gpio.queue(far, gpio.echo_cm(50), gpio.long_cycle())         # far, an echo at 50 cm, then the module goes busy
+    s = b.hub.read()
+    assert s.clear_t is None and abs(s.echo_cm - 50) < 0.5
+    gpio.queue(gpio.echo_cm(40))
+    clock.advance(1.0)
+
+
+def test_ok_sample_reports_the_closest_echo():
+    b, bus, gpio, clock = make()
+    gpio.queue(gpio.echo_cm(60), gpio.echo_cm(40), gpio.echo_cm(50))
+    s = b.hub.read()
+    assert s.dist_state == "ok" and abs(s.dist_cm - 50) < 0.5 and abs(s.echo_cm - 40) < 0.5 and s.clear_t is None
+
+
 def test_open_space_long_cycles_are_never_a_fault():
     # Measured on the car facing open space: 59-75 % of pings are long cycles and none returns a real echo. A long
     # cycle that starts on the trigger and ends by itself is a living module that heard nothing: no reading, but no
