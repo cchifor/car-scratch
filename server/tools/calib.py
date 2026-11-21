@@ -192,10 +192,15 @@ async def light(c: Client, seconds: float) -> int:
 
 async def _restore(c: Client, **fields) -> None:
     try:
-        await asyncio.wait_for(c.cmd("calibrate", **fields), 3)
-        print("restored the car's previous " + ", ".join(fields), flush=True)
+        reply = await asyncio.wait_for(c.cmd("calibrate", **fields), 3)
     except Exception:                                  # noqa: BLE001 - best effort; the socket may be gone
-        print("could not restore the car's previous " + ", ".join(fields) + " (restart the service)", flush=True)
+        reply = None
+    if reply is not None and _reply_ok(reply):
+        print("restored the car's previous " + ", ".join(fields), flush=True)
+    else:
+        why = f" ({reply.get('code')})" if isinstance(reply, dict) and reply.get("code") else ""
+        print("could NOT restore the car's previous " + ", ".join(fields) + why
+              + ": set it again with calib, or restart the service (the saved file is unchanged)", flush=True)
 
 
 async def _light_steps(c: Client, seconds: float) -> int:

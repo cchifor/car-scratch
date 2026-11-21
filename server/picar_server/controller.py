@@ -797,9 +797,11 @@ class Controller:
         margin = self._margin(self._eff if moving else self._speed_setting)
         line = {"ok": False, "raw": None, "on": None, "pos": None}
         line_raw = s.line_raw if s is not None else None
-        if (line_raw is None and s is not None and s.line_skipped and self._line_last
+        if (line_raw is None and s is not None and s.line_skipped and self._line_none_run == 1 and self._line_last
                 and now - self._line_last[1] <= LINE_HOLD_S):
-            line_raw = self._line_last[0]            # bridges one skipped frame; never a suppressed or failed module
+            # bridges exactly ONE skipped frame (the run of frameless samples is 1); never two in a row, never a
+            # suppressed or failed module
+            line_raw = self._line_last[0]
         if line_raw is not None and now - sample_at <= 1.0:
             on = safety.line_on(line_raw, self.cal["line_threshold"], self.cal["line_black_high"])
             line = {"ok": True, "raw": list(line_raw), "on": on, "pos": safety.line_pos(on)}

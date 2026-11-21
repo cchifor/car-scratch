@@ -80,8 +80,10 @@ follower that is only read at standstill cannot follow a line, which is what it 
 1. `line_enabled` is true and the module is present.
 2. It has answered well: 10 good reads in a row since its last failure (a failure is an I2C error, or a frame
    that was invalid after the immediate retry).
-3. The read takes only the I2C bus lock (like the light read), never the motor lock, so a motor write or stop is
-   never queued behind it for longer than one bus transaction.
+3. The read takes only the I2C bus lock (like the light read), never the motor lock. A motor write or stop still
+   waits for the bus lock while the sensor thread holds it; the lock gives no priority to waiters, so the wait can
+   span the line read, its one retry and the light read (about 10 ms with a healthy module; see the residual risk
+   below for a stalled bus).
 
 Moving reads are switched off, with one WARNING in the log, until the car has been stopped when a moving read
 raises an error, returns an invalid frame twice in a row, or takes more than 15 ms (measured with a monotonic

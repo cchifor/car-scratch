@@ -321,6 +321,16 @@ def test_a_single_missing_line_frame_neither_faults_nor_blanks_telemetry():
     assert ("sensor_ok", {"sensor": "line"}) in r.events
 
 
+def test_two_skipped_frames_in_a_row_are_never_bridged():
+    # re-review: two skips 40 ms apart both fell inside the 0.1 s hold and kept a stale frame marked ok
+    r = Rig()
+    line_sample(r, [400] * 5)
+    line_sample(r, None, skipped=True)
+    assert r.ctl.snapshot()["line"]["ok"] is True                    # one skip: bridged
+    line_sample(r, None, skipped=True)
+    assert r.ctl.snapshot()["line"]["ok"] is False                   # the second: not bridged
+
+
 def test_a_module_never_seen_raises_no_line_event():
     r = Rig()
     for _ in range(6):
