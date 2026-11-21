@@ -122,3 +122,28 @@ Until the cable is fixed, the line sensor reports offline. Leave these fields at
 - Save the file, or use `calibrate` with `save` from a controller client.
 - Restart the car service, or reconnect the browser, so the new values load.
 - Repeat the Stage 2 floor test (in `docs/on-car-checklist.md`) to confirm the changes.
+
+## Measured on the car (2026-11-21, fresh batteries)
+
+Floor runs with `wsclient move` (obstacle stop on), measured with a tape from the front bumper:
+
+| Run | Result |
+|---|---|
+| 40 % for 1.5 s | 13 cm, slight drift right |
+| 60 % for 1.5 s | 19 cm, straight |
+| 80 % for 1.0 s | 16 cm, slight drift right |
+| 100 % for 1.0 s | 19.5 cm, slight drift right |
+| 60 % for 3 s (trim −2°) | 40 cm, 10° right |
+| 60 % for 3 s (trim −4°) | 42 cm, 5° left |
+| full left, 60 %, ~1 s (stopped by the guard) | 45° and 60° left, bumper 14 cm from the start |
+
+The two 60 % runs give a start-up lag of about 0.2 s and a steady 14.7 cm/s; the table holds steady speeds
+(the 1 s runs corrected by the 0.2 s lag). Saved in `~/.config/car-scratch/calibration.json` on the car:
+
+- `speed_table`: `[[0,0],[25,0],[55,10.0],[70,14.7],[85,20.0],[100,24.4]]` (duty % → cm/s)
+- `wheelbase_cm`: 7 (effective: the wheels turn more than the commanded angle, so the car turns twice as
+  sharply as the 14 cm placeholder predicted)
+- `steer_trim_deg`: −3.3 (interpolated between the −2° and −4° checks)
+- stop distances (`coast_table`) were not measured, so `calibrated` stays `false` and the banner stays.
+
+This car is slow (about 25 cm/s flat out), so at 40 % it covers only ~10 cm per second.
