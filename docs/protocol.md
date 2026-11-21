@@ -51,6 +51,11 @@ remember to stop.
   `client_id` keeps a **30 s lease**: only the same `client_id` (e.g. an iPad tab that came back) gets
   control without `force` — and it comes back on hold (it must `resume`).
 - If a `hello` arrives with a `client_id` that already has a live socket, the new socket is a viewer.
+- **Promotion** (amendment 2026-11-21, found on the car): whenever there is no controller and no live
+  lease (the lease expired, or the controller released), the longest-waiting car-mode session that asked
+  for control (`hello{want:"control"}` or `control take`, and has not sent `control release` since) is
+  made controller (`role` message), on hold like every acquisition. Checked on every telemetry tick.
+  Without it a tab opened during a lease stayed VIEW ONLY for good, and could not reset an e-stop.
 - Hand-over: e-stop persists; config resets to defaults; every acquisition of car control (hello that
   becomes controller, `control take`, `mode` car, a returning lease holder) starts **on hold** (reason
   `control`, or `boot`); the new controller must `resume`.
@@ -107,7 +112,7 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
 | `ack` | `id`, `ok:true`, plus effective values where relevant (e.g. `speed`, `angle`, `config`) |
 | `done` | `id`, `result:"completed"\|"stopped"\|"superseded"\|"obstacle"\|"estop"\|"watchdog"\|"reverse_timeout"\|"hw_fault"` (only for `move`) |
 | `err` | `id?`, `code`, `msg` — codes: `not_controller`, `estop`, `hold`, `obstacle_blocked`, `sensor_fault`, `reverse_timeout`, `bad_request`, `rate_limited`, `hw_unavailable`, `hw_fault`, `sim_only`, `sim_busy` |
-| `event` | `kind`, extra fields — kinds: `obstacle_stop{cm}`, `estop{by}`, `estop_reset`, `watchdog_stop`, `sensor_fault{reason}`, `hold{reason}`, `resumed`, `reverse_timeout`, `drive_timeout`, `control_changed{controller_present}`, `sensor_fault{sensor}`, `sensor_ok{sensor}`, `hw_fault{msg}` |
+| `event` | `kind`, extra fields — kinds: `obstacle_stop{cm}`, `estop{by}`, `estop_reset`, `watchdog_stop`, `sensor_fault{reason}`, `hold{reason}`, `resumed`, `reverse_timeout`, `drive_timeout`, `control_changed{controller_present}`, `sensor_fault{sensor}`, `sensor_ok{sensor}`, `hw_fault{msg}`, `power_low{low_events}`, `power_ok` (amendment 2026-11-21, car mode only: `power_low` on each false->true change of `power.low`, `power_ok` once `low` has stayed false for 5 s after a `power_low`) |
 | `role` | `role:"controller"\|"viewer"`, `controller_present:bool` |
 | `world` | sim world description, see `docs/contracts.md` §4 |
 
@@ -123,6 +128,7 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
  "light":{"ok":true,"raw":[118,96,131],"bright":[41,63,30],"max":"middle"},
  "pose":{"x":12.4,"y":31.0,"dir":85.5,"src":"dr"},
  "safety":{"estop":false,"hold":false,"calibrated":false,"obstacle_stop":true,"stop_cm":20,"margin_cm":24.5,"speed_limit":100,"blocked":false,"hw_fault":null},
+ "power":{"source":"pi","low":false,"low_since_boot":true,"low_events":0,"throttled":false,"on_s":1260,"motor_s":84.5,"cpu_temp_c":52.1,"cpu_load":0.31},
  "ctl":{"role":"controller","viewers":1},
  "move":{"id":17,"remaining_ms":640}}
 ```
@@ -136,6 +142,17 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
 - `pose`: x/y in cm, `dir` in **Scratch degrees** (90 = the start heading, clockwise positive), so a stage
   sprite can mirror it directly. `src`: `dr` (dead reckoning on the real car) or `sim`.
 - `move`: the running timed move or null.
+- `power` (amendment 2026-11-21): the car has **no battery-voltage sensor**; the Pi's own supply monitor is the
+  proxy. `source`: `"pi"` (readable: hwmon `rpi_volt` alarm or `vcgencmd get_throttled`), `"sim"` (a sim session),
+  `"none"` (nothing readable, e.g. a dev box or Docker: all flags false, counters 0, floats null).
+  `low`: supply voltage too low right now (`rpi_volt in0_lcrit_alarm`, else throttled bit 0).
+  `low_since_boot`: throttled bit 16, or any `low` seen by this server. `low_events`: false->true changes of `low`
+  seen by this server process. `throttled`: throttled bit 2 (CPU slowed down right now).
+  `on_s`: seconds since the car was switched on (= Pi uptime; the Pi boots at battery switch-on; sim: since the
+  session started). `motor_s`: seconds (1 decimal) the rear motors ran (any non-zero duty) since the server
+  started (sim: since the session started). `cpu_temp_c`: 1 decimal or null. `cpu_load`: 1-min load average
+  divided by the CPU count, 2 decimals, or null. Polled at 1 Hz (vcgencmd every 10 s); the values are cached,
+  so most frames repeat the previous reading.
 
 ## 6. REST
 

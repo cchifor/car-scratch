@@ -31,6 +31,66 @@ const messages = defineMessages({
         defaultMessage: 'Simulator world',
         description: 'Accessibility label of the simulator world picker'
     },
+    viewRoom: {
+        id: 'picar.monitor.viewRoom',
+        defaultMessage: 'Room',
+        description: 'View switch: fixed camera showing the whole room'
+    },
+    viewFollow: {
+        id: 'picar.monitor.viewFollow',
+        defaultMessage: 'Follow',
+        description: 'View switch: camera follows the car'
+    },
+    viewAria: {
+        id: 'picar.monitor.viewAria',
+        defaultMessage: 'Room view or follow view',
+        description: 'Accessibility label of the Room / Follow switch'
+    },
+    clearMap: {
+        id: 'picar.monitor.clearMap',
+        defaultMessage: 'Clear map',
+        description: 'Button that erases the obstacle map and the trail'
+    },
+    resetPosition: {
+        id: 'picar.monitor.resetPosition',
+        defaultMessage: 'Reset position',
+        description: 'Button that sets the car position back to the start (0, 0)'
+    },
+    stageMirror: {
+        id: 'picar.monitor.stageMirror',
+        defaultMessage: 'Stage mirror',
+        description: 'Toggle that mirrors the car on the Scratch stage'
+    },
+    clearMapShort: {
+        id: 'picar.monitor.clearMapShort',
+        defaultMessage: 'Clear map',
+        description: 'Short label of the clear map button on the canvas'
+    },
+    resetShort: {
+        id: 'picar.monitor.resetShort',
+        defaultMessage: 'Reset',
+        description: 'Short label of the reset position button on the canvas'
+    },
+    mirrorShort: {
+        id: 'picar.monitor.mirrorShort',
+        defaultMessage: 'Mirror',
+        description: 'Short label of the stage mirror toggle on the canvas'
+    },
+    stageMirrorOn: {
+        id: 'picar.monitor.stageMirrorOn',
+        defaultMessage: 'on',
+        description: 'Stage mirror toggle state: on'
+    },
+    stageMirrorOff: {
+        id: 'picar.monitor.stageMirrorOff',
+        defaultMessage: 'off',
+        description: 'Stage mirror toggle state: off'
+    },
+    toolsAria: {
+        id: 'picar.monitor.toolsAria',
+        defaultMessage: 'Map tools',
+        description: 'Accessibility label of the row of map buttons'
+    },
     monitorAria: {
         id: 'picar.monitor.aria',
         defaultMessage: 'Car monitor',
@@ -91,6 +151,26 @@ const messages = defineMessages({
         defaultMessage: 'Reset',
         description: 'Button that clears the emergency stop'
     },
+    bannerEstopViewerHint: {
+        id: 'picar.bannerEstopViewerHint',
+        defaultMessage: 'Only the driver can reset it',
+        description: 'Banner hint shown to a view-only session: it cannot clear the emergency stop'
+    },
+    estopReset: {
+        id: 'picar.estop.reset',
+        defaultMessage: 'Reset',
+        description: 'Button next to E-STOP that clears a latched emergency stop'
+    },
+    estopResetAria: {
+        id: 'picar.estop.resetAria',
+        defaultMessage: 'Reset emergency stop',
+        description: 'Accessibility label of the reset button next to E-STOP'
+    },
+    estopLatchedTitle: {
+        id: 'picar.estop.latchedTitle',
+        defaultMessage: 'E-STOP is on',
+        description: 'Tooltip of the E-STOP button while the emergency stop is latched'
+    },
     bannerPaused: {
         id: 'picar.banner.paused',
         defaultMessage: 'PAUSED',
@@ -150,6 +230,62 @@ const messages = defineMessages({
         id: 'picar.banner.reloadButton',
         defaultMessage: 'Reload page',
         description: 'Button that reloads the page'
+    },
+    powerLow: {
+        id: 'picar.power.low',
+        defaultMessage: 'Battery low',
+        description: 'Power chip: the supply voltage is too low right now'
+    },
+    powerDipped: {
+        id: 'picar.power.dipped',
+        defaultMessage: 'Power dipped',
+        description: 'Power chip: the supply voltage was too low earlier'
+    },
+    powerOk: {
+        id: 'picar.power.ok',
+        defaultMessage: 'Power OK',
+        description: 'Power chip: no power problem'
+    },
+    powerSim: {
+        id: 'picar.power.sim',
+        defaultMessage: 'Simulator',
+        description: 'Power chip: the simulator has no real power'
+    },
+    powerOn: {
+        id: 'picar.power.on',
+        defaultMessage: 'On for {min} min',
+        description: 'Power details: minutes since the car was switched on'
+    },
+    powerMotors: {
+        id: 'picar.power.motors',
+        defaultMessage: 'motors ran {min} min',
+        description: 'Power details: minutes the rear motors have run'
+    },
+    powerCpu: {
+        id: 'picar.power.cpu',
+        defaultMessage: 'CPU {temp} \u00b0C',
+        description: 'Power details: CPU temperature'
+    },
+    powerLoad: {
+        id: 'picar.power.load',
+        defaultMessage: 'load {pct} %',
+        description: 'Power details: CPU load'
+    },
+    powerHelp: {
+        id: 'picar.power.help',
+        defaultMessage: 'This car can\'t measure the battery level. The warning comes from the Raspberry Pi\'s ' +
+            'supply-voltage alarm: charge or replace the batteries when it shows.',
+        description: 'Power details: how the battery warning works'
+    },
+    powerAria: {
+        id: 'picar.power.aria',
+        defaultMessage: 'Power status',
+        description: 'Accessibility label of the power chip'
+    },
+    bannerBatteryLow: {
+        id: 'picar.banner.batteryLow',
+        defaultMessage: 'BATTERY LOW \u2014 charge the batteries (motors may be weak, the car may restart)',
+        description: 'Banner while the supply voltage is too low'
     },
     tabSprites: {
         id: 'picar.tabs.sprites',

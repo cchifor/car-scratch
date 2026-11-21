@@ -48,6 +48,10 @@ One-time on the Pi (needs the owner's sudo password): `deploy/pi-setup.sh`. Then
 `docker compose run --rm deploy` (dry run) and `docker compose run --rm deploy sh deploy/deploy.sh`.
 Follow [docs/on-car-checklist.md](docs/on-car-checklist.md) the first time.
 
+Maintenance access without the owner's sudo password: `deploy/ops-user-setup.sh` (run once with sudo) creates
+`carops`, a key-only, LAN-only account with passwordless sudo for root-level deploy and debug steps
+(`sudo sh ops-user-setup.sh --remove` deletes it again).
+
 ## Licence
 
 AGPL-3.0-only (the Scratch editor is AGPL-3.0). The car serves the exact source of what it runs at

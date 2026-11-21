@@ -11,6 +11,7 @@ import {
     treadDirection
 } from './car-renderer.js';
 import {drawScene} from './draw-scene.js';
+import {ObstacleMap, computeRoomView, growBounds, isPoseReset, newBounds} from './room-map.js';
 import messages from './messages.js';
 import styles from './car-monitor.css';
 
@@ -34,15 +35,17 @@ const now = () => (typeof performance === 'undefined' ? Date.now() : performance
  * @param {?object} props.geometry - welcome.geometry
  * @param {?object} props.world - sim world to draw (sim mode only)
  * @param {boolean} props.showLine - draw the line sensor dots
- * @param {string} props.resetKey - changes whenever the trail must restart (mode switch, reconnect)
+ * @param {string} props.resetKey - changes whenever the trail must restart (mode switch, reconnect, world)
+ * @param {string} [props.viewMode] - 'room' (fixed camera, default) or 'follow' (camera tracks the car)
+ * @param {number} [props.clearToken] - changes when the user pressed "Clear map"
  * @returns {React.Element} the canvas
  */
-const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
+const MonitorCanvas = ({link, geometry, world, showLine, resetKey, viewMode = 'room', clearToken = 0}) => {
     const intl = useIntl();
     const wrapRef = useRef(null);
     const canvasRef = useRef(null);
     const sizeRef = useRef({width: 0, height: 0, dpr: 1});
-    const inputRef = useRef({geometry: normalizeGeometry(geometry), world, showLine});
+    const inputRef = useRef({geometry: normalizeGeometry(geometry), world, showLine, viewMode});
     const sceneRef = useRef({
         tel: null,
         trail: [],
@@ -52,12 +55,23 @@ const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
         interval: 50,
         shown: START_POSE,
         cam: null,
-        phase: 0
+        phase: 0,
+        map: new ObstacleMap(),
+        bounds: newBounds(),
+        lastPose: null
     });
 
     useEffect(() => {
-        inputRef.current = {geometry: normalizeGeometry(geometry), world, showLine};
-    }, [geometry, world, showLine]);
+        inputRef.current = {geometry: normalizeGeometry(geometry), world, showLine, viewMode};
+    }, [geometry, world, showLine, viewMode]);
+
+    // "Clear map": forget the obstacle points and refit the room view from scratch.
+    useEffect(() => {
+        const scene = sceneRef.current;
+        scene.map.clear();
+        scene.bounds = newBounds();
+        if (scene.shown) growBounds(scene.bounds, scene.shown);
+    }, [clearToken]);
 
     // Telemetry feeds the scene directly.
     useEffect(() => {
@@ -70,6 +84,10 @@ const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
         scene.shown = initial || START_POSE;
         if (initial) pushTrail(scene.trail, initial);
         scene.cam = null;
+        scene.map.clear();
+        scene.bounds = newBounds();
+        scene.lastPose = initial;
+        if (initial) growBounds(scene.bounds, initial);
         const onTelemetry = tel => {
             const t = now();
             const pose = poseOf(tel);
@@ -79,7 +97,17 @@ const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
             scene.at = t;
             scene.from = scene.shown;
             scene.to = pose;
+            if (isPoseReset(scene.lastPose, pose)) {
+                // reset_pose or a teleport: the old map and room no longer apply.
+                scene.map.clear();
+                scene.bounds = newBounds();
+                scene.from = null;
+            }
+            scene.lastPose = pose;
             pushTrail(scene.trail, pose);
+            growBounds(scene.bounds, pose);
+            const hit = scene.map.addReading(pose, inputRef.current.geometry, tel.dist);
+            if (hit) growBounds(scene.bounds, hit);
         };
         link.on('telemetry', onTelemetry);
         return () => link.removeListener('telemetry', onTelemetry);
@@ -143,7 +171,10 @@ const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
                 x: scene.cam.x + ((pose.x - scene.cam.x) * 0.25),
                 y: scene.cam.y + ((pose.y - scene.cam.y) * 0.25)
             };
-            const view = computeView({width, height, world: sceneWorld, pose: scene.cam});
+            const useRoom = !sceneWorld && input.viewMode !== 'follow';
+            const view = useRoom ?
+                computeRoomView({width, height, bounds: scene.bounds}) :
+                computeView({width, height, world: sceneWorld, pose: scene.cam});
             const tel = scene.tel;
             scene.phase = advanceTreadPhase(
                 scene.phase,
@@ -161,6 +192,7 @@ const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
                 pose,
                 tel,
                 trail: scene.trail,
+                obstacles: scene.map.points,
                 treadPhase: scene.phase,
                 showLine: input.showLine
             });
@@ -186,6 +218,7 @@ const MonitorCanvas = ({link, geometry, world, showLine, resetKey}) => {
 
 MonitorCanvas.propTypes = {
     geometry: PropTypes.shape({}),
+    clearToken: PropTypes.number,
     link: PropTypes.shape({
         getTelemetry: PropTypes.func,
         on: PropTypes.func.isRequired,
@@ -193,6 +226,7 @@ MonitorCanvas.propTypes = {
     }).isRequired,
     resetKey: PropTypes.string,
     showLine: PropTypes.bool,
+    viewMode: PropTypes.oneOf(['room', 'follow']),
     world: PropTypes.shape({})
 };
 

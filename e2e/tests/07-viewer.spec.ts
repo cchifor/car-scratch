@@ -32,7 +32,7 @@ test.describe('viewer', () => {
             await waitTel(a, 'tel.drive.moving', 5000);
 
             // viewer E-STOP stops the shared car
-            await b.getByRole('button', {name: /Emergency stop/i}).first().click();
+            await b.getByRole('button', {name: 'Emergency stop the car', exact: true}).first().click();
             await waitTel(a, 'tel.safety.estop && !tel.drive.moving', 3000, 10);
             await waitTel(b, 'tel.safety.estop', 3000, 10);
         } finally {

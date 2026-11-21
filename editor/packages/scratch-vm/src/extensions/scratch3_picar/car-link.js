@@ -2,6 +2,8 @@ const EventEmitter = require('events');
 const P = require('./protocol');
 
 const WS_OPEN = 1;
+// Coalesced ops that set state rather than motion: never dropped by a bypass op, sent before it.
+const SETTING_OPS = Object.freeze(['steer', 'config']);
 
 const defaultClock = () => ({
     // Monotonic: a wall-clock step backwards must not make the throttles drop later presses.
@@ -68,6 +70,7 @@ class CarLink extends EventEmitter {
         this._buildSha = o.buildSha || null;
 
         this._memMode = null;
+        this._memMirror = false;
         this.clientId = this._loadClientId();
 
         this._ws = null;
@@ -104,6 +107,7 @@ class CarLink extends EventEmitter {
             connection: 'closed',
             role: 'viewer',
             mode: this._loadMode(),
+            stageMirror: this._loadStageMirror(),
             carAvailable: true,
             hw: null,
             config: null,
@@ -201,8 +205,14 @@ class CarLink extends EventEmitter {
         if (this._backpressured() && !P.BACKPRESSURE_OPS.includes(op)) return null;
         if (P.COALESCED_OPS.includes(op)) return this._coalesce(op, fields);
         if (P.BYPASS_OPS.includes(op)) {
-            this._bypass();
-            if (op !== 'move' && this._repeatsLastFrame(op)) return null;
+            const after = this._bypass(op);
+            if (op !== 'move' && this._repeatsLastFrame(op)) {
+                this._sendAfter(after);
+                return null;
+            }
+            const id = this._transmit(op, fields);
+            this._sendAfter(after);
+            return id;
         }
         return this._transmit(op, fields);
     }
@@ -230,7 +240,7 @@ class CarLink extends EventEmitter {
                 speed: Math.round(P.clamp(speed, 0, 100)),
                 ms: Math.round(P.clamp(ms, 1, P.MOVE_MS_MAX, 1))
             };
-            this._bypass();
+            this._bypass('move');
             const id = this._transmit('move', fields);
             if (id === null) {
                 resolve('disconnected');
@@ -247,7 +257,7 @@ class CarLink extends EventEmitter {
      * Emits a local {kind: 'estop', local: true} event at once.
      */
     estop () {
-        this._bypass();
+        this._bypass('estop');
         const now = this._clock.now();
         const since = this._lastEstopPostAt === null ? null : now - this._lastEstopPostAt;
         if (since === null || since < 0 || since >= P.ESTOP_POST_MS) {
@@ -283,6 +293,24 @@ class CarLink extends EventEmitter {
         const msg = {t: 'control', action};
         if (force) msg.force = true;
         return this._rawSend(msg);
+    }
+
+    /**
+     * Whether the Car sprite on the stage follows the car pose; persisted in localStorage picar.stageMirror.
+     * @param {boolean} on - mirror on or off
+     */
+    setStageMirror (on) {
+        const v = Boolean(on);
+        this._memMirror = v;
+        try {
+            if (this._local) this._local.setItem(P.STAGE_MIRROR_KEY, v ? '1' : '0');
+        } catch { /* in-memory only */ }
+        this._setState({stageMirror: v});
+    }
+
+    /** Erase the stage-mirror trail (the GUI's "Clear map"); the extension listens for 'clearTrail'. */
+    clearTrail () {
+        this.emit('clearTrail');
     }
 
     /** @returns {object} immutable snapshot of the coarse state */
@@ -349,6 +377,15 @@ class CarLink extends EventEmitter {
         return this._memMode || 'car';
     }
 
+    _loadStageMirror () {
+        try {
+            const v = this._local && this._local.getItem(P.STAGE_MIRROR_KEY);
+            if (v === '1') return true;
+            if (v === '0') return false;
+        } catch { /* default */ }
+        return this._memMirror === true;
+    }
+
     _saveMode (mode) {
         this._memMode = mode;
         try {
@@ -397,10 +434,45 @@ class CarLink extends EventEmitter {
         return dt >= 0 && dt < P.COALESCE_MS;
     }
 
-    /** Bypass ops clear pending motion ops (and forget what was last sent, so a repeat is real). */
-    _bypass () {
+    /**
+     * Before a bypass op: pending MOTION ops (drive, set_speed) are superseded by it and dropped, but pending
+     * SETTINGS (steer, config) are sent now, in order, so "steer left" + "drive for 4 s" within 50 ms still
+     * steers (on-car finding 2026-11-21: the figure eight drove straight). Also forgets what was last sent, so
+     * a repeat is real.
+     */
+    _bypass (op) {
+        this._dropPending('drive');
+        this._dropPending('set_speed');
+        let after = [];
+        if (op === 'estop') {
+            // E-STOP halts everything and goes out first: pending settings are dropped
+        } else if (op === 'stop' || op === 'pause') {
+            // a stop is never delayed behind a setting (a steer is an I2C write on the car): send them after it
+            after = SETTING_OPS.filter(s => s in this._pending).map(s => [s, this._pending[s]]);
+        } else {
+            // move / resume / estop_reset: the setting must apply before the motion
+            for (const s of SETTING_OPS) {
+                if (s in this._pending) this._flushPending(s);
+            }
+        }
         this._clearPending();
         this._bypassMemory();
+        return after;
+    }
+
+    /**
+     * Sends settings taken from the coalescer by _bypass, after the stop they waited behind.
+     * @param {Array} after - [op, fields] pairs
+     */
+    _sendAfter (after) {
+        for (const [op, fields] of after) {
+            const now = this._clock.now();
+            const last = this._lastSent[op];
+            const same = op === 'config' ?
+                this._isDuplicate(op, fields, now) :
+                last && shallowEqual(last.fields, fields);
+            if (!same) this._flush(op, fields, now);
+        }
     }
 
     _bypassMemory () {
@@ -458,6 +530,8 @@ class CarLink extends EventEmitter {
 
     _flushPending (op) {
         const fields = this._pending[op];
+        // also called directly (by _bypass): cancel the scheduled flush, or it would fire later for a newer value
+        if (op in this._pendingTimers) this._clock.clearTimeout(this._pendingTimers[op]);
         delete this._pending[op];
         delete this._pendingTimers[op];
         if (!fields || this._state.connection !== 'open' || this._backpressured()) return;

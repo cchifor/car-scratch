@@ -383,6 +383,115 @@ async def test_lease_expires(aiohttp_client, tmp_path):
     assert wb["role"] == "controller"
 
 
+async def test_waiting_viewer_is_promoted_when_the_lease_expires_and_starts_on_hold(aiohttp_client, tmp_path):
+    # On-car finding 2026-11-21: a tab opened while a lease was held stayed VIEW ONLY forever, so its
+    # E-STOP banner had no Reset. The longest-waiting viewer that asked for control now gets the seat.
+    c = await aiohttp_client(create_app(settings(tmp_path, lease_s=0.3)))
+    a, _ = await hello(c)
+    await go(a)
+    await a.ok("drive", dir="forward", speed=30)
+    b, wb = await hello(c, cid="client-bbbb-0002")
+    assert wb["role"] == "viewer"
+    await b.ok("estop")                                               # a viewer may e-stop ...
+    assert await b.err("estop_reset") == "not_controller"            # ... but not reset
+    await a.ws.close()
+    role = await b.until(lambda d: d["t"] == "role" and d["role"] == "controller", timeout=3.0)
+    assert role["controller_present"] is True
+    tel = await b.until(lambda d: d["t"] == "tel" and d["ctl"]["role"] == "controller")
+    assert tel["safety"]["hold"] is True and tel["safety"]["estop"] is True and tel["drive"]["moving"] is False
+    await b.ok("estop_reset")
+    assert await b.err("drive", dir="forward", speed=30) == "hold"      # promotion never resumes by itself
+    await b.ok("resume")
+    await b.ok("drive", dir="forward", speed=30)
+
+
+async def test_no_promotion_while_the_lease_is_held(srv):
+    a, _ = await hello(srv)
+    b, wb = await hello(srv, cid="client-bbbb-0002")
+    assert wb["role"] == "viewer"
+    await a.ws.close()
+    await asyncio.sleep(0.4)                                          # default lease is 30 s
+    tel = await b.until(lambda d: d["t"] == "tel")
+    assert tel["ctl"]["role"] == "viewer"
+    back, wback = await hello(srv)                                    # the lease holder gets its seat back
+    assert wback["role"] == "controller"
+
+
+async def test_release_hands_the_seat_to_the_waiting_viewer_but_never_back_to_the_releaser(aiohttp_client, tmp_path):
+    c = await aiohttp_client(create_app(settings(tmp_path, lease_s=0.2)))
+    a, _ = await hello(c)
+    b, _ = await hello(c, cid="client-bbbb-0002")
+    await a.send(t="control", action="release")
+    await b.until(lambda d: d["t"] == "role" and d["role"] == "controller")
+    await b.ws.close()                                               # b leaves; its lease expires
+    await asyncio.sleep(0.6)
+    assert await car_controller(c) is False                          # a released explicitly: not promoted
+    await a.send(t="control", action="take")
+    await a.until(lambda d: d["t"] == "role" and d["role"] == "controller")
+
+
+async def car_controller(c) -> bool:
+    """The server's CURRENT view (buffered telemetry could predate the lease expiry)."""
+    return (await (await c.get("/api/status")).json())["clients"]["car_controller"]
+
+
+async def test_view_only_sessions_and_sim_sessions_are_never_promoted(aiohttp_client, tmp_path):
+    c = await aiohttp_client(create_app(settings(tmp_path, lease_s=0.2)))
+    a, _ = await hello(c)
+    v, _ = await hello(c, cid="client-vvvv-0002", want="view")
+    s, ws_ = await hello(c, cid="client-ssss-0003", mode="sim")
+    assert ws_["mode"] == "sim"
+    await a.ws.close()
+    await asyncio.sleep(0.6)
+    assert await car_controller(c) is False
+
+
+async def test_a_failed_sim_hello_is_never_promoted_to_the_car(aiohttp_client, tmp_path):
+    c = await aiohttp_client(create_app(settings(tmp_path, lease_s=0.2)))
+    a, _ = await hello(c)
+    f = await connect(c, cid="client-ffff-0002", mode="sim", world="no-such-world")
+    assert (await f.recv())["code"] == "bad_request"                 # err first, then the car welcome
+    wf = await f.recv()
+    assert wf["t"] == "welcome" and wf["mode"] == "car" and wf["role"] == "viewer"
+    await a.ws.close()
+    await asyncio.sleep(0.6)
+    assert await car_controller(c) is False
+
+
+async def test_a_duplicate_of_a_live_client_id_is_never_promoted(aiohttp_client, tmp_path):
+    c = await aiohttp_client(create_app(settings(tmp_path, lease_s=0.2)))
+    a, _ = await hello(c)
+    orig, _ = await hello(c, cid="client-dddd-0002", want="view")
+    dup, wd = await hello(c, cid="client-dddd-0002")                 # same client id, wants control
+    assert wd["role"] == "viewer"
+    await a.ws.close()
+    await asyncio.sleep(0.6)
+    assert await car_controller(c) is False
+    await orig.ws.close()                                            # the original is gone: now it may
+    await dup.until(lambda d: d["t"] == "role" and d["role"] == "controller", timeout=3.0)
+
+
+async def test_repeated_estops_log_one_warning(srv, caplog):
+    caplog.set_level("DEBUG", logger="picar_server.session")
+    a, _ = await hello(srv)
+    for _ in range(5):
+        await a.ok("estop")
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "E-STOP" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+async def test_safety_actions_are_logged(srv, caplog):
+    caplog.set_level("INFO", logger="picar_server.session")
+    a, _ = await hello(srv)
+    b, _ = await hello(srv, cid="client-bbbb-0002")
+    await b.ok("estop")
+    assert await b.err("estop_reset") == "not_controller"
+    await a.ok("estop_reset")
+    text = caplog.text
+    assert "hello s" in text and "E-STOP by viewer" in text
+    assert "refused estop_reset from viewer" in text and "estop_reset by" in text
+
+
 async def test_duplicate_live_client_id_becomes_viewer(srv):
     a, _ = await hello(srv)
     b, wb = await hello(srv)

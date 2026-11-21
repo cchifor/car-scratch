@@ -5,7 +5,7 @@ import {EventEmitter} from 'events';
  * @param {object} [stateOverrides] - fields merged into the initial state
  * @returns {object} an EventEmitter with jest mock methods
  */
-const createMockLink = (stateOverrides = {}) => {
+const createMockLink = (stateOverrides = {}, {stageMirror = false, clearTrail = false} = {}) => {
     const link = new EventEmitter();
     let state = {
         connection: 'open',
@@ -33,6 +33,8 @@ const createMockLink = (stateOverrides = {}) => {
     link.send = jest.fn(() => 1);
     link.control = jest.fn();
     link.setMode = jest.fn();
+    if (clearTrail) link.clearTrail = jest.fn();
+    if (stageMirror) link.setStageMirror = jest.fn();
     link.setState = patch => {
         state = {...state, ...patch};
         subscribers.forEach(fn => fn(state));

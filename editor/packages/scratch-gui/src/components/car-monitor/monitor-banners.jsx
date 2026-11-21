@@ -11,6 +11,7 @@ const TEXT = {
     estop: messages.bannerEstop,
     hwfault: messages.bannerHwFault,
     paused: messages.bannerPaused,
+    batteryLow: messages.bannerBatteryLow,
     viewOnly: messages.bannerViewOnly,
     notCalibrated: messages.bannerNotCalibrated,
     obstacleStopOff: messages.bannerObstacleStopOff,
@@ -46,6 +47,12 @@ const Banner = ({banner, onAction, className}) => (
     >
         <span className={styles.bannerText}>
             <FormattedMessage {...TEXT[banner.id]} />
+            {banner.id === 'estop' && !banner.action ? (
+                <span className={styles.bannerHint}>
+                    {' — '}
+                    <FormattedMessage {...messages.bannerEstopViewerHint} />
+                </span>
+            ) : null}
         </span>
         {banner.action ? (
             <button

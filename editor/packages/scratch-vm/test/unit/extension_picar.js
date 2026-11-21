@@ -85,7 +85,8 @@ test('getInfo: ids, colours, opcodes have functions, block types', t => {
     const expectedOps = ['drive', 'driveFor', 'stopMotors', 'setSpeed', 'steer', 'setSteering', 'distance',
         'obstacleCloser', 'whenObstacle', 'lineValue', 'lineSees', 'linePosition', 'whenLineSees', 'lightValue',
         'brightestDirection', 'setObstacleStop', 'setStopDistance', 'setSpeedLimit', 'emergencyStop', 'isConnected',
-        'carMode', 'carX', 'carY', 'carDirection', 'resetPosition', 'whenCarEvent'];
+        'carMode', 'batteryLow', 'onTimeMinutes', 'carX', 'carY', 'carDirection', 'resetPosition', 'setStageMirror',
+        'stageMirrorOn', 'whenCarEvent'];
     t.same(blocks.map(b => b.opcode), expectedOps);
     const argNames = {};
     for (const b of blocks) {
@@ -102,6 +103,8 @@ test('getInfo: ids, colours, opcodes have functions, block types', t => {
     t.equal(type('obstacleCloser'), BlockType.BOOLEAN);
     t.equal(type('lineSees'), BlockType.BOOLEAN);
     t.equal(type('isConnected'), BlockType.BOOLEAN);
+    t.equal(type('batteryLow'), BlockType.BOOLEAN);
+    t.equal(type('onTimeMinutes'), BlockType.REPORTER);
     t.equal(type('whenObstacle'), BlockType.HAT);
     t.equal(type('whenLineSees'), BlockType.HAT);
     t.equal(type('whenCarEvent'), BlockType.HAT);
@@ -133,13 +136,13 @@ test('getInfo: ids, colours, opcodes have functions, block types', t => {
     t.same(menuValues('sensor'), ['1', '2', '3', '4', '5']);
     t.same(menuValues('light'), ['left', 'middle', 'right']);
     t.same(menuValues('onoff'), ['on', 'off']);
-    t.same(menuValues('event'), ['obstacle', 'estop', 'disconnected']);
+    t.same(menuValues('event'), ['obstacle', 'estop', 'disconnected', 'battery_low']);
     t.equal(info.menus.sensor.acceptReporters, true);
     for (const m of ['dir', 'steer', 'light', 'onoff', 'event']) {
         t.notOk(info.menus[m].acceptReporters, `${m} is a plain field menu`);
     }
     t.same(info.menus.event.items.map(i => i.text),
-        ['stops for an obstacle', 'is emergency stopped', 'loses connection']);
+        ['stops for an obstacle', 'is emergency stopped', 'loses connection', 'battery gets low']);
     // Every menu referenced exists.
     for (const b of blocks) {
         for (const a of Object.values(b.arguments || {})) {
@@ -349,6 +352,41 @@ test('whenCarEvent returns true; events start hats with a fresh object, only whe
     ctx.ws.serverSend({t: 'event', kind: 'sensor_fault', reason: 'x'});
     ctx.ws.serverSend({t: 'event', kind: 'watchdog_stop'});
     t.equal(ctx.runtime.hats.length, 2, 'only obstacle_stop maps to obstacle');
+    t.equal(ctx.runtime.stopAllCalls, 0);
+    t.end();
+});
+
+test('batteryLow / onTimeMinutes read tel.power; missing power data is false / 0', t => {
+    const ctx = setup();
+    const {ext, ws} = ctx;
+    t.equal(ext.batteryLow(), false, 'no tel yet');
+    t.equal(ext.onTimeMinutes(), 0);
+    ws.serverSend(tel());
+    t.equal(ext.batteryLow(), false, 'older server: no power section');
+    t.equal(ext.onTimeMinutes(), 0);
+    ws.serverSend(tel({power: {source: 'pi', low: false, on_s: 3240, motor_s: 180.5}}));
+    t.equal(ext.batteryLow(), false);
+    t.equal(ext.onTimeMinutes(), 54);
+    ws.serverSend(tel({power: {source: 'pi', low: true, low_since_boot: true, low_events: 1, on_s: 89}}));
+    t.equal(ext.batteryLow(), true);
+    t.equal(ext.onTimeMinutes(), 1);
+    ws.serverSend(tel({power: {source: 'none'}}));
+    t.equal(ext.batteryLow(), false);
+    t.equal(ext.onTimeMinutes(), 0);
+    ws.serverClose(1006);
+    t.equal(ext.batteryLow(), false, 'disconnected');
+    t.equal(ext.onTimeMinutes(), 0);
+    t.end();
+});
+
+test('power_low event starts the battery_low hat, only when armed', t => {
+    const ctx = setup();
+    ctx.ws.serverSend({t: 'event', kind: 'power_low', low_events: 1});
+    t.same(ctx.runtime.hats, [], 'not armed: nothing');
+    ARM(ctx);
+    ctx.ws.serverSend({t: 'event', kind: 'power_low', low_events: 2});
+    ctx.ws.serverSend({t: 'event', kind: 'power_ok'});
+    t.same(ctx.runtime.hats.map(h => [h.opcode, h.fields]), [['picar_whenCarEvent', {EVENT: 'battery_low'}]]);
     t.equal(ctx.runtime.stopAllCalls, 0);
     t.end();
 });

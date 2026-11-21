@@ -97,6 +97,26 @@ const drawTrail = (ctx, trail, scale) => {
     ctx.stroke();
 };
 
+// Obstacle dots, oldest first: three alpha buckets, one path and one fill each (cheap per frame).
+const OBSTACLE_ALPHAS = [0.22, 0.45, 0.75];
+const drawObstacles = (ctx, points, scale) => {
+    const n = points.length;
+    if (!n) return;
+    const side = Math.max(1.2, 3 / scale);
+    const half = side / 2;
+    ctx.fillStyle = '#263238';
+    for (let b = 0; b < OBSTACLE_ALPHAS.length; b++) {
+        const from = Math.floor((n * b) / OBSTACLE_ALPHAS.length);
+        const to = Math.floor((n * (b + 1)) / OBSTACLE_ALPHAS.length);
+        if (to <= from) continue;
+        ctx.globalAlpha = OBSTACLE_ALPHAS[b];
+        ctx.beginPath();
+        for (let i = from; i < to; i++) ctx.rect(points[i].x - half, points[i].y - half, side, side);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+};
+
 let hatchPattern = null;
 const getHatchPattern = ctx => {
     if (hatchPattern || typeof document === 'undefined') return hatchPattern;
@@ -321,6 +341,7 @@ const drawHud = (ctx, tel, width, height) => {
  * @param {{x: number, y: number, dir: number}} scene.pose - pose to draw the car at
  * @param {?object} scene.tel - latest telemetry
  * @param {Array<{x: number, y: number}>} scene.trail - trail points
+ * @param {?Array<{x: number, y: number}>} scene.obstacles - obstacle map points, oldest first
  * @param {number} scene.treadPhase - tread stripe phase in cm
  * @param {boolean} scene.showLine - draw the line sensor dots
  */
@@ -339,6 +360,7 @@ const drawScene = (ctx, scene) => {
     ctx.translate(-view.cx, -view.cy);
     drawWorld(ctx, world);
     drawTrail(ctx, trail, view.scale);
+    if (scene.obstacles) drawObstacles(ctx, scene.obstacles, view.scale);
 
     // Car frame: +x forward, +y right. The world frame is y-up, so flip back before rotating.
     ctx.translate(pose.x, pose.y);

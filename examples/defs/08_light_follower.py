@@ -8,7 +8,8 @@ META = dict(id="08-light-follower", title="Light follower", level="intermediate"
 
 def build():
     p, car = new_project("Light follower: shine a torch at the car")
-    bright = any_of(*[gt(light_value(w), 20) for w in ("left", "middle", "right")])
+    # 5 of 100: a torch (or the simulated lamp) is seen from about 2 m away; in a dark room all three read ~0
+    bright = any_of(*[gt(light_value(w), 5) for w in ("left", "middle", "right")])
     car.script(
         -200, 60, when_flag(),
         forever(

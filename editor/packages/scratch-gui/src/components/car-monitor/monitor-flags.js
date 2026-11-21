@@ -1,3 +1,29 @@
+const num = v => (typeof v === 'number' && isFinite(v) ? v : null);
+
+/**
+ * Flat, primitive power flags (so sameFlags only re-renders when something visible changes).
+ * An older server sends no power section: powerSource is then null and the chip is hidden.
+ * @param {?object} power - tel.power
+ * @returns {object} flags
+ */
+const powerFlags = power => {
+    const p = power && typeof power === 'object' ? power : {};
+    const source = p.source === 'pi' || p.source === 'sim' ? p.source : null;
+    const onS = num(p.on_s);
+    const motorS = num(p.motor_s);
+    const temp = num(p.cpu_temp_c);
+    const load = num(p.cpu_load);
+    return {
+        powerSource: source,
+        powerLow: source !== null && p.low === true,
+        powerDipped: source !== null && (p.low_since_boot === true || num(p.low_events) > 0),
+        powerOnMin: onS === null ? null : Math.round(onS / 60),
+        powerMotorMin: motorS === null ? null : Math.round(motorS / 60),
+        powerCpuTemp: temp === null ? null : Math.round(temp),
+        powerLoadPct: load === null ? null : Math.round(load * 100)
+    };
+};
+
 /**
  * Reduce a telemetry frame to the coarse flags the banners need. The Car Monitor compares these
  * after every frame and re-renders React only when one changes.
@@ -14,7 +40,8 @@ const telemetryFlags = tel => {
         hwFault: Boolean(safety.hw_fault),
         calibrated: typeof safety.calibrated === 'boolean' ? safety.calibrated : null,
         obstacleStop: typeof safety.obstacle_stop === 'boolean' ? safety.obstacle_stop : null,
-        lineOk: typeof line.ok === 'boolean' ? line.ok : null
+        lineOk: typeof line.ok === 'boolean' ? line.ok : null,
+        ...powerFlags(tel.power)
     };
 };
 
@@ -59,6 +86,7 @@ const computeBanners = ({state, flags, obstacleFlash, lineFault}) => {
     if (f.estop) add('estop', 'bad', false, isController ? 'estopReset' : null);
     else if (f.hold) add('paused', 'warn', false, isController ? 'resume' : null);
     if (obstacleFlash) add('obstacle', 'bad');
+    if (f.powerLow) add('batteryLow', 'bad');
     if (!isController) add('viewOnly', 'info', false, 'take');
     if (f.obstacleStop === false) add('obstacleStopOff', 'bad', true);
     if (isCar && f.calibrated === false) add('notCalibrated', 'warn', true);
@@ -67,4 +95,4 @@ const computeBanners = ({state, flags, obstacleFlash, lineFault}) => {
     return out;
 };
 
-export {computeBanners, sameFlags, telemetryFlags};
+export {computeBanners, powerFlags, sameFlags, telemetryFlags};
