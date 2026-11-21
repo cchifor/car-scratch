@@ -42,7 +42,8 @@ test('E-STOP then Reset from the menu bar on the real car (no motion)', async ({
     console.log(`controller after ${Math.round((Date.now() - t0) / 1000)} s`);
 
     await page.getByRole('tab', {name: 'Sprites'}).click();      // the owner's case: monitor banner not visible
-    const estop = page.getByRole('button', {name: /Emergency stop/i}).first();
+    // exact name: "Reset emergency stop" (next to it while latched) must not match
+    const estop = page.getByRole('button', {name: 'Emergency stop the car', exact: true}).filter({visible: true}).first();
     await estop.click();
     await page.waitForFunction(() => (window as any).__picar.link.getTelemetry().safety.estop === true, null, {timeout: 5000});
     console.log('after E-STOP:', JSON.stringify(await state(page)));

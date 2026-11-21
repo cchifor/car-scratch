@@ -14,7 +14,7 @@ test.describe('smoke', () => {
         await expect(page.getByRole('tab', {name: 'Pi Car'})).toBeVisible();
 
         // E-STOP in the menu bar.
-        await expect(page.getByRole('button', {name: /Emergency stop/i}).first()).toBeVisible();
+        await expect(page.getByRole('button', {name: 'Emergency stop the car', exact: true}).first()).toBeVisible();
 
         // Link is up and talking.
         const st = await page.evaluate(() => (window as any).__picar.link.getState());

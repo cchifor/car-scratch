@@ -15,7 +15,7 @@ test.describe('iPad layout and touch', () => {
     test('touch targets: E-STOP and the Pi Car tab are at least 44x44', async ({page}) => {
         await openEditor(page, {mode: 'sim', world: 'arena'});
         const targets = [
-            ['E-STOP', page.getByRole('button', {name: /Emergency stop/i}).first()],
+            ['E-STOP', page.getByRole('button', {name: 'Emergency stop the car', exact: true}).first()],
             ['Pi Car tab', page.getByRole('tab', {name: 'Pi Car'})]
         ] as const;
         for (const [label, loc] of targets) {

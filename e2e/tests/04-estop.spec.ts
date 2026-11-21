@@ -9,7 +9,7 @@ test.describe('e-stop', () => {
         await drive(page, 'forward', 40);
         await waitTel(page, 'tel.drive.moving', 5000);
 
-        const estop = page.getByRole('button', {name: /Emergency stop/i}).first();
+        const estop = page.getByRole('button', {name: 'Emergency stop the car', exact: true}).first();
         const box = await estop.boundingBox();
         expect(box).toBeTruthy();
         // pointerdown is what fires it: press without releasing
