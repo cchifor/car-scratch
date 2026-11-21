@@ -114,6 +114,51 @@ def test_line_high_beyond_the_module_cycle_is_a_fault():
     assert gpio.contention == 0                           # a stuck-high line is never driven against either
 
 
+def test_fake_long_cycle_rises_only_after_its_delay():
+    b, bus, gpio, clock = make()
+    gpio.queue(gpio.long_cycle(delay=0.02))
+    gpio.setup(5, gpio.IN)
+    assert gpio.input(5) == 0
+    clock.advance(0.01)
+    assert gpio.input(5) == 0
+    clock.advance(0.02)
+    assert gpio.input(5) == 1
+
+
+def test_after_a_busy_cycle_the_next_sample_takes_three_pings():
+    # Review finding: a stationary car whose last reading was far must not resume with a single ping after the
+    # blind window; an obstacle may have appeared and one missed echo would publish a false "far".
+    b, bus, gpio, clock = make()
+    far = (0.0003, 0.027)
+    gpio.default = far
+    _read_for(b, clock, 0.2)
+    gpio.queue(gpio.long_cycle())
+    while b.hub.read().dist_state != "none":
+        clock.advance(0.04)
+    while gpio.input(5) == 1:
+        clock.advance(0.04)
+    gpio.queue(far, gpio.echo_cm(10), gpio.echo_cm(10))     # obstacle now at 10 cm; the first ping misses it
+    s = b.hub.read()
+    assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
+
+
+def test_two_valid_pings_never_average_with_far():
+    # Review finding: median of [FAR, 10 cm] was (999 + 10) / 2 = 505 cm, "ok": a close echo reported far away.
+    b, bus, gpio, clock = make()
+    far = (0.0003, 0.027)
+    gpio.queue(None, far, gpio.echo_cm(10))
+    s = b.hub.read()
+    assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
+
+
+def test_valid_pings_then_busy_never_average_with_far():
+    b, bus, gpio, clock = make()
+    far = (0.0003, 0.027)
+    gpio.queue(far, gpio.echo_cm(10), gpio.long_cycle())
+    s = b.hub.read()
+    assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
+
+
 def test_module_that_only_answers_with_long_cycles_becomes_a_fault():
     b, bus, gpio, clock = make()
     gpio.default = gpio.long_cycle()                     # every ping: a long cycle, never a reading
@@ -155,7 +200,7 @@ def test_ping_with_busy_wait_gap_over_1ms_is_discarded():
     gpio.queue(gpio.echo_cm(100), gpio.echo_cm(50), gpio.echo_cm(52))
     clock.gap_after(60, 0.002)                           # stall while the first ping's echo is high
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 51) < 0.3     # median of the two undisturbed pings
+    assert s.dist_state == "ok" and abs(s.dist_cm - 50) < 0.3     # the lower of the two undisturbed pings
 
 
 def test_gap_before_the_echo_starts_is_tolerated():

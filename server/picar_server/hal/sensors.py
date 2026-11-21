@@ -102,18 +102,19 @@ class Ultrasonic:
 
     def measure(self, n: int):
         """Median of n pings (needs 2 valid when n == 3); BUSY when the module went into its long cycle before
-        enough valid pings (later pings would only see it busy); None = no valid ping."""
+        enough valid pings (later pings would only see it busy); None = no valid ping. With two valid pings the
+        lower one counts (median_low): averaging FAR (999) with a real 10 cm echo would report 505 cm."""
         need = 2 if n >= 3 else 1
         vals: list[float] = []
         for _ in range(n):
             v = self.ping()
             if v is BUSY:
-                return statistics.median(vals) if len(vals) >= need else BUSY
+                return statistics.median_low(vals) if len(vals) >= need else BUSY
             if v is not None:
                 vals.append(v)
         if len(vals) < need:
             return None
-        return statistics.median(vals)
+        return statistics.median_low(vals)
 
 
 class SensorHub:
@@ -161,8 +162,10 @@ class SensorHub:
         if v is BUSY:
             if self.clock.monotonic() - self._last_answer_t <= NO_ANSWER_FAULT_S:
                 # The module's long no-echo cycle: no reading this sample, not a fault. It neither counts toward
-                # FAULT_AFTER nor resets it, and keeps the near/far memory. (Forward motion still needs a fresh
-                # ok/far reading: the controller's staleness rule is unchanged.)
+                # FAULT_AFTER nor resets it. It does clear the near/far memory, so the first sample after the
+                # blind window takes 3 pings (an obstacle may have appeared meanwhile). Forward motion still needs
+                # a fresh ok/far reading: the controller's staleness rule is unchanged.
+                self._last_cm, self._last_far = None, False
                 return None, DIST_NONE if self._nones < FAULT_AFTER else DIST_FAULT
             v = None                                       # busy for too long without an answer: counts as none
         if v is None:

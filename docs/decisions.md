@@ -132,6 +132,13 @@ minute) while the car stood still facing a weak reflector about 110 cm away.
    continue. During a busy cycle a forward drive is therefore refused or stopped; only the false fault flag and
    its events are gone.
 
+**Review follow-ups (same day).** An independent review found two problems in the same path, both fixed with
+tests: (a) the change kept the "last reading was far" memory across a busy cycle, so the next sample took one
+ping; an obstacle that appeared during the blind window and a single missed echo would have published `far`. A
+busy sample now clears that memory, so the next sample takes 3 pings. (b) Pre-existing: with 2 valid pings of 3
+the median averaged them, so `far` (999) and a real 10 cm echo made 505 cm. The lower of two valid pings now
+counts (`median_low`).
+
 **Residual.** Driving forward toward a weak reflector can still stop the car when the module goes into its long
 cycle (no fresh reading for 150 ms). Accepting "busy" as clear for up to one cycle while moving would remove those
 stops at the cost of up to ~0.4 s without distance data (about 10 cm at full speed); that is an owner decision and

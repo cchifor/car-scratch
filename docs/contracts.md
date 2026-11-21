@@ -112,7 +112,8 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
   Echo still high at 40 ms → the module is **busy** (never treated as `far`): no new trigger while the line is
   high (the module ignores triggers, and driving the pin low would fight its output); still high after 0.6 s →
   no answer (stuck line). See decision D5.
-  Median of 3 pings when the last reading was < the near hint or the car moves forward; else 1 ping.
+  Median of 3 pings when the last reading was < the near hint, after `none` or a busy cycle, or when the car
+  moves forward; else 1 ping. With only 2 valid pings the lower one counts (never an average with `far`).
   A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`. A busy sample is `none` but does
   not count toward the fault, unless there has been no `ok`/`far` reading for 1.5 s.
 - PCF8591: for each input `ch` in `light_channels` (left, middle, right; default 0, 1, 2):

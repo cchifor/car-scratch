@@ -136,7 +136,8 @@ class FakeGPIO:
         self.pings = 0
         self._active = None
         self._t_in = 0.0
-        self._busy_until = 0.0                          # the module holds the line high until then (long cycle)
+        self._busy_from = 0.0                           # long cycle: the module drives the line high from here ...
+        self._busy_until = 0.0                          # ... until here, and ignores triggers until then
         self.contention = 0                             # times the pin was driven low while the module held it high
 
     def setwarnings(self, flag):
@@ -157,13 +158,17 @@ class FakeGPIO:
         return ("cycle", delay, width)
 
     def _busy(self) -> bool:
+        """Mid-cycle: the module ignores triggers."""
         return self.clock.now < self._busy_until
+
+    def _driving_high(self) -> bool:
+        return self._busy_from <= self.clock.now < self._busy_until
 
     def setup(self, pin, mode, initial=None):
         if initial is not None:
             self.outputs.append((pin, initial))
             self.level[pin] = initial
-            if pin == self.us_pin and initial == 0 and self._busy():
+            if pin == self.us_pin and initial == 0 and self._driving_high():
                 self.contention += 1
         if pin == self.us_pin and mode == self.IN:     # the pin turns into an input: the echo window starts
             self.pings += 1
@@ -174,6 +179,7 @@ class FakeGPIO:
             self._t_in = self.clock.now
             if entry is not None and entry[0] == "cycle":
                 _, delay, width = entry
+                self._busy_from = self.clock.now + delay
                 self._busy_until = self.clock.now + delay + width
                 entry = (delay, width)
             self._active = entry
@@ -181,12 +187,12 @@ class FakeGPIO:
     def output(self, pin, value):
         self.outputs.append((pin, value))
         self.level[pin] = value
-        if pin == self.us_pin and value == 0 and self._busy():
+        if pin == self.us_pin and value == 0 and self._driving_high():
             self.contention += 1
 
     def input(self, pin):
         if pin == self.us_pin and self._busy():
-            return 1
+            return 1 if self._driving_high() else 0
         if pin != self.us_pin or self._active is None:
             return 0
         delay, width = self._active
