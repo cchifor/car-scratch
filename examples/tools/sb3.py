@@ -64,6 +64,50 @@ def num(n):
     return str(n)
 
 
+# ---------------------------------------------------------------- layout (workspace units, zoom 1)
+# Generous estimates of scratch-blocks' metrics: over-estimating only adds space between scripts.
+LAYOUT_LEFT, LAYOUT_TOP, LAYOUT_GAP = 40, 40, 48
+HAT_H = 80            # a hat (extension hats carry the icon and are the tallest)
+CMD_H = 52            # a command block (extension blocks carry an icon)
+C_TOP_H = 52          # the top arm of if / forever / repeat
+C_ELSE_H = 40         # the "else" arm
+C_BOTTOM_H = 32       # the bottom arm
+EMPTY_SUBSTACK_H = 24
+
+
+def _is_hat(b):
+    return b.opcode.startswith(("event_when", "picar_when", "control_start_as_clone"))
+
+
+def _input_height(v):
+    """Height of what is plugged into an input: a reporter / boolean grows with what is nested in it."""
+    if isinstance(v, Blk):
+        nested = [_input_height(x) for x in v.inputs.values() if not isinstance(x, list)]
+        return max([40] + [h + 16 for h in nested])
+    return 32
+
+
+def _row_height(b, base):
+    nested = [_input_height(v) for v in b.inputs.values() if not isinstance(v, list)]
+    return max([base] + [h + 16 for h in nested])
+
+
+def stack_height(stack):
+    """Estimated height of a stack of blocks (a whole script when stack[0] is its hat)."""
+    total = 0
+    for i, b in enumerate(stack):
+        subs = [v for _, v in sorted(b.inputs.items()) if isinstance(v, list)]
+        if i == 0 and _is_hat(b):
+            total += max(HAT_H, _row_height(b, CMD_H) + 40)
+        elif subs:
+            total += _row_height(b, C_TOP_H)
+            total += sum(max(EMPTY_SUBSTACK_H, stack_height(s)) for s in subs)
+            total += C_ELSE_H * (len(subs) - 1) + C_BOTTOM_H
+        else:
+            total += _row_height(b, CMD_H)
+    return total
+
+
 def blk(opcode, fields=None, **inputs):
     return Blk(opcode, inputs, fields)
 
@@ -247,14 +291,19 @@ class Target:
         return self
 
     def script(self, x, y, *blocks):
-        """A top-level script: blocks[0] is the hat; the rest are its stack."""
+        """A top-level script: blocks[0] is the hat; the rest are its stack.
+        x, y are ignored: scripts are laid out in one column, in definition order (see _json)."""
         self.scripts.append((x, y, list(blocks)))
         return self
 
     def _json(self, layer):
         blocks = {}
-        for x, y, stack in self.scripts:
-            self.project._stack(stack, None, blocks, top=(x, y))
+        # One column, spaced by each script's estimated height (like Scratch's "Clean up blocks"), so scripts
+        # never overlap however tall they grow (2026-11-21: fixed positions made example 05 unreadable).
+        y = LAYOUT_TOP
+        for _x, _y, stack in self.scripts:
+            self.project._stack(stack, None, blocks, top=(LAYOUT_LEFT, y))
+            y += stack_height(stack) + LAYOUT_GAP
         return {"isStage": self.is_stage, "name": self.name, "variables": {}, "lists": {},
                 "broadcasts": {}, "blocks": blocks, "comments": {}, "currentCostume": 0,
                 "costumes": self.costumes, "sounds": self.sounds, "volume": 100,

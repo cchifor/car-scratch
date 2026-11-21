@@ -17,6 +17,7 @@ def build():
     # only set it, so the manoeuvre lives in one place and never runs twice at the same time.
     p.var("avoid", 0)
     p.var("last distance", 0)
+    p.var("change", 0)
     car.script(
         -260, 40, when_flag(),
         set_var("avoid", 0),
@@ -36,10 +37,13 @@ def build():
         set_var("last distance", distance()),
         forever(
             wait(1.5),
-            if_(and_(and_(eq(V("avoid"), 0), lt(distance(), 100)),
-                     and_(lt(sub(distance(), V("last distance")), 3), lt(sub(V("last distance"), distance()), 3))),
-                say("I'm stuck!"),
-                set_var("avoid", 1)),
+            set_var("change", sub(distance(), V("last distance"))),
+            # the distance changed by less than 3 cm ...
+            if_(and_(lt(V("change"), 3), gt(V("change"), -3)),
+                # ... while something is near and we are not already avoiding
+                if_(and_(eq(V("avoid"), 0), lt(distance(), 100)),
+                    say("I'm stuck!"),
+                    set_var("avoid", 1))),
             set_var("last distance", distance()),
         ),
     )
