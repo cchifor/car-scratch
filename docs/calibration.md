@@ -62,9 +62,17 @@ Notes:
 - **Line follower (I2C-1 0x11).** Five 16-bit values, sensor 1 is the leftmost. A read takes about 2.9 ms
   (3.0 ms at most over 40 reads) with no bus error. About 1 % of frames are all 0xFF (65535 in every slot);
   the server treats a frame with any value above 1023 as invalid and reads again. White or reflective close to
-  the sensor reads LOW (about 170–300); black, or nothing in range, reads HIGH (about 420–425). With the module
-  at its current mounting height white paper reads about 423, so it sees almost no difference; the module has
-  to be lowered before the thresholds mean anything. Until then, expect the guided procedure to refuse.
+  the sensor reads LOW (about 170–300); black, or nothing in range, reads HIGH (about 420–425). At first the
+  module saw nothing at its mounted height (white paper read about 423, like empty space); after the owner fixed
+  its power and height, white reads 102-125.
+- **Line follower, calibrated (2026-11-21).** On white paper the five sensors read 125, 119, 110, 102 and 116;
+  over the line (glossy black tape) 14, 17, 15, 13 and 16. Glossy tape mirrors the IR light back, so on this
+  line the reading DROPS (matte black or empty space would read high instead): which way it goes depends on the
+  line material, which is why it is a setting and the guided procedure detects it. Sliding the line from left
+  to right lit the sensors in order 1 to 5. Saved on the car: `line_black_high` `false`, `line_threshold`
+  `[70, 68, 62, 58, 66]` (midway between white and line), `line_enabled` `true`. Checked: on white all five
+  off; line under the middle sensor gives `on` `[F, F, T, F, F]` and position 0; under the left one,
+  `[T, F, F, F, F]` and position -2.
 
 ## How to measure
 
