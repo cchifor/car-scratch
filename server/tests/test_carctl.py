@@ -283,6 +283,33 @@ async def test_safety_event_discards_pending_and_in_flight_motion(event):
     await d.shutdown()
 
 
+@pytest.mark.parametrize("detail", [{"sensor": "ultrasonic"}, {}, {"sensor": "something-new"}])
+async def test_ultrasonic_or_unknown_sensor_fault_discards_motion(detail):
+    d, link = await make_driver()
+    d.act("speed+")
+    await d.drain()
+    d.act("speed+")
+    d.on_event("sensor_fault", {"kind": "sensor_fault", **detail})
+    assert not d._pending and d.state.speed == 0
+    await d.shutdown()
+
+
+async def test_line_follower_fault_keeps_driving_state():
+    # The server stops the car only for the ultrasonic; a line-follower fault leaves the motors running, so the
+    # local target must not drop to 0 (it would disagree with the car and the next key would start from 0).
+    d, link = await make_driver()
+    d.act("speed+")
+    await d.drain()
+    assert d.state.speed == 10
+    d.on_event("sensor_fault", {"kind": "sensor_fault", "sensor": "line"})
+    d.on_event("sensor_ok", {"kind": "sensor_ok", "sensor": "line"})
+    assert d.state.speed == 10 and d.ack_speed == 10
+    d.act("speed+")
+    await d.drain()
+    assert link.client.sent[-1] == ("drive", {"dir": "forward", "speed": 20})
+    await d.shutdown()
+
+
 async def test_ack_of_command_sent_before_event_is_ignored():
     gate = asyncio.Event()
     d, link = await make_driver(gate=gate)

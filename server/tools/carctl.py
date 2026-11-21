@@ -306,7 +306,9 @@ class Driver:
         self.state.speed = 0
         self.ack_speed = None
 
-    def on_event(self, kind: str) -> None:
+    def on_event(self, kind: str, m: Optional[dict] = None) -> None:
+        if kind == "sensor_fault" and (m or {}).get("sensor") == "line":
+            return          # the server stops the car only for the ultrasonic: the motors keep running, keep the target
         if kind in STOPPING_EVENTS or kind == "control_changed":
             self.halt()
 
@@ -494,7 +496,7 @@ class Link:
         self._stop = asyncio.Event()
         self._tel_seq: Any = None
         self._tel_at: Optional[float] = None
-        self.listeners: list[Callable[[str], None]] = []
+        self.listeners: list[Callable[[str, dict], None]] = []    # (kind, the whole event message)
 
     # -- data from the client
     def _on_event(self, m: dict) -> None:
@@ -505,7 +507,7 @@ class Link:
         elif kind == "resumed":
             self.hold_reason = None
         for fn in self.listeners:
-            fn(kind)
+            fn(kind, m)
         if self._extra_event:
             self._extra_event(m)
 
