@@ -31,7 +31,7 @@ The first time the server starts, it reads an old `~/picar/calibration.json` tha
 | `speed_table` | For each motor power (duty %), how far the car moves per second. Used for dead reckoning and the stop distance. | pairs `[duty %, cm/s]` | 2-second run test (below) |
 | `coast_table` | For each user speed, how far the car rolls after you stop the motors. | pairs `[user speed %, cm]` | Coast test (below) |
 | `wheelbase_cm` | Distance between the front and rear axles. Used for turning geometry. | cm | Tape measure, axle centre to axle centre |
-| `ultrasonic_offset_cm` | Distance from the car's pose point (the rear axle) to the ultrasonic sensor. | cm | Tape measure |
+| `ultrasonic_offset_cm` | Distance from the car's pose point (the rear axle) to the ultrasonic sensor. **Reserved, not used yet:** the server draws and simulates the sensor at a fixed 22 cm (`ultrasonic_x` in `safety.geometry()`). | cm | Tape measure |
 | `line_sensor_spacing_cm` | Distance between two neighbouring line sensors. | cm | Tape measure, centre to centre |
 | `line_threshold` | A line sensor "sees the line" when its raw reading is **below** this value. | raw value | Line test (below) |
 | `light_dark` | Raw light reading in darkness. | raw value, 0–255 | Cover the light sensor |
@@ -96,6 +96,10 @@ The obstacle guard uses this table. A longer coast means the car needs more room
 1. Measure from the rear axle centre to the front of the ultrasonic sensor.
 2. Enter it in `ultrasonic_offset_cm`.
 
+The server does not read this field yet: the geometry it sends to the editor and uses in the simulator has a
+fixed `ultrasonic_x` of 22 cm (`safety.geometry()` in `server/picar_server/safety.py`). Record the value anyway,
+so it is ready when the field is wired in.
+
 ### 6. Line sensors (after the line follower cable is fixed)
 
 1. Measure the centre-to-centre distance between two neighbouring sensors.
@@ -120,7 +124,10 @@ Until the cable is fixed, the line sensor reports offline. Leave these fields at
 ## After you change the file
 
 - Save the file, or use `calibrate` with `save` from a controller client.
-- Restart the car service, or reconnect the browser, so the new values load.
+- Restart the car service so the new values load: `systemctl --user restart car-scratch` on the car, or a
+  deploy (which restarts it). The server reads `calibration.json` only once, when it starts; reconnecting the
+  browser does not reload it. The one exception is `calibrate` with `steer_trim_deg`, which applies the new
+  trim at once.
 - Repeat the Stage 2 floor test (in `docs/on-car-checklist.md`) to confirm the changes.
 
 ## Measured on the car (2026-11-21, fresh batteries)

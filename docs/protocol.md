@@ -17,7 +17,8 @@ remember to stop.
 - Frames: UTF-8 JSON text, one object per frame, field `t` = message type. Client frames are at most
   4096 bytes (server closes with 1009 otherwise). Server ping/pong every 5 s (aiohttp `heartbeat=5`).
 - Rate limit: 100 client frames/s per connection, burst 50. Excess frames get `err{code:"rate_limited"}`
-  and are dropped (a `stop` or `estop` is never dropped).
+  and are dropped. Exempt: a `cmd` whose `op` is in `RATE_EXEMPT_OPS` (`session.py`): `stop`, `estop` and
+  `pause` are never dropped.
 - Protocol version `v = 1`. A client whose major version differs is closed with code **4409**
   ("protocol mismatch, reload the page").
 
@@ -134,6 +135,9 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
 ```
 
 - `drive.dir`: `"forward"|"backward"|null` (null when stopped). `duty`: `[left, right]` PCA9685 values.
+- `drive.bumped` (simulator only: sim sessions, and the shared car under `--hardware sim`; absent on the real
+  and dry-run car): `true` while the simulated car body is against a wall (the last physics step was blocked),
+  `false` once it moves freely again or after `reset_pose` / a world change.
 - `dist.state`: `ok` | `far` (nothing in range; `cm` null) | `none` (this sample got no echo; `cm` null) |
   `fault` (3 consecutive `none` samples; `cm` null). `cm` is measured from the sensor face.
 - `obstacle`: true when `dist.cm < safety.margin_cm`.

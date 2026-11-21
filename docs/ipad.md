@@ -28,7 +28,9 @@ disconnected after you switch apps, tap **Resume** when it asks.
   - **Sprites**: the Scratch sprite list.
   - **Pi Car**: the car monitor. It shows the car's position, the sensor cone, the line sensors,
     the light sensors and any warning banners.
-- The red **E-STOP** button is always on screen in the menu bar and over the stage.
+- The red **E-STOP** button is always in the menu bar. When the stage is in full-screen mode, a second
+  E-STOP floats over the stage. While the emergency stop is on, a **Reset** button appears next to E-STOP
+  (only for the device that controls the car).
 
 ## Drag blocks
 

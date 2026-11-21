@@ -2,11 +2,13 @@
 
 Files under `editor/` changed by Car Scratch relative to the imported upstream snapshot
 (scratch-editor @ 105e22ea3ff935f2e4aa3d0b3b26f661e98d298a, imported in commit 4c31b51), as required by
-AGPL-3.0 §5(a). All changes are dated 2026-11-20 unless git history says otherwise.
-Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = added, D = deleted.
+AGPL-3.0 §5(a). The changes were made on 2026-11-20 and 2026-11-21; git history has the date of each one.
+Regenerated on 2026-11-21 with `git diff --name-status 4c31b51 HEAD -- editor/`.
+M = modified, A = added, D = deleted.
 
 | Status | File |
 |---|---|
+| M | `editor/packages/scratch-gui/src/components/action-menu/icon--sprite.svg` |
 | A | `editor/packages/scratch-gui/src/components/car-info-modal/car-info-modal.css` |
 | A | `editor/packages/scratch-gui/src/components/car-info-modal/car-info-modal.jsx` |
 | A | `editor/packages/scratch-gui/src/components/car-info-modal/messages.js` |
@@ -19,6 +21,8 @@ Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = 
 | A | `editor/packages/scratch-gui/src/components/car-monitor/monitor-banners.jsx` |
 | A | `editor/packages/scratch-gui/src/components/car-monitor/monitor-canvas.jsx` |
 | A | `editor/packages/scratch-gui/src/components/car-monitor/monitor-flags.js` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/power-chip.jsx` |
+| A | `editor/packages/scratch-gui/src/components/car-monitor/room-map.js` |
 | A | `editor/packages/scratch-gui/src/components/car-monitor/rotate-hint.css` |
 | A | `editor/packages/scratch-gui/src/components/car-monitor/rotate-hint.jsx` |
 | A | `editor/packages/scratch-gui/src/components/car-monitor/status-chip.jsx` |
@@ -43,7 +47,11 @@ Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = 
 | M | `editor/packages/scratch-gui/src/components/stop-all/stop-all.css` |
 | A | `editor/packages/scratch-gui/src/containers/car-estop.jsx` |
 | A | `editor/packages/scratch-gui/src/containers/car-monitor.jsx` |
+| M | `editor/packages/scratch-gui/src/containers/costume-library.jsx` |
+| M | `editor/packages/scratch-gui/src/containers/costume-tab.jsx` |
 | A | `editor/packages/scratch-gui/src/containers/picar-global.jsx` |
+| M | `editor/packages/scratch-gui/src/containers/sprite-library.jsx` |
+| M | `editor/packages/scratch-gui/src/containers/target-pane.jsx` |
 | D | `editor/packages/scratch-gui/src/lib/default-project/0fb9be3e8397c983338cb71dc84d0b25.svg` |
 | D | `editor/packages/scratch-gui/src/lib/default-project/bcf454acf82e4504149f7ffe07081dbc.svg` |
 | A | `editor/packages/scratch-gui/src/lib/default-project/ca638974c72dcdf2b039ea6d16e1b35b.svg` |
@@ -58,6 +66,7 @@ Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = 
 | A | `editor/packages/scratch-gui/src/lib/picar/examples-api.js` |
 | A | `editor/packages/scratch-gui/src/lib/picar/load-project-buffer.js` |
 | A | `editor/packages/scratch-gui/src/lib/picar/projects-api.js` |
+| A | `editor/packages/scratch-gui/src/lib/picar/scratch-characters.js` |
 | A | `editor/packages/scratch-gui/src/lib/picar/storage.js` |
 | A | `editor/packages/scratch-gui/src/lib/picar/use-car-link.js` |
 | M | `editor/packages/scratch-gui/src/lib/titled-hoc.jsx` |
@@ -79,13 +88,19 @@ Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = 
 | A | `editor/packages/scratch-gui/static/car-scratch/library-tile.png` |
 | A | `editor/packages/scratch-gui/static/car-scratch/library-tile.svg` |
 | A | `editor/packages/scratch-gui/static/car-scratch/manifest.webmanifest` |
+| M | `editor/packages/scratch-gui/static/favicon.ico` |
 | M | `editor/packages/scratch-gui/test/integration/menu-bar.test.js` |
 | M | `editor/packages/scratch-gui/test/integration/project-state.test.js` |
+| A | `editor/packages/scratch-gui/test/unit/picar/car-estop-reset.test.jsx` |
+| A | `editor/packages/scratch-gui/test/unit/picar/car-monitor-toolbar.test.jsx` |
 | A | `editor/packages/scratch-gui/test/unit/picar/car-monitor.test.jsx` |
 | A | `editor/packages/scratch-gui/test/unit/picar/car-projects.test.jsx` |
 | A | `editor/packages/scratch-gui/test/unit/picar/car-renderer.test.js` |
 | A | `editor/packages/scratch-gui/test/unit/picar/examples-menu.test.jsx` |
+| A | `editor/packages/scratch-gui/test/unit/picar/final-review.test.jsx` |
 | A | `editor/packages/scratch-gui/test/unit/picar/mock-link.js` |
+| A | `editor/packages/scratch-gui/test/unit/picar/power-chip.test.jsx` |
+| A | `editor/packages/scratch-gui/test/unit/picar/room-map.test.js` |
 | M | `editor/packages/scratch-gui/webpack.config.js` |
 | M | `editor/packages/scratch-vm/src/extension-support/extension-manager.js` |
 | A | `editor/packages/scratch-vm/src/extensions/scratch3_picar/car-link.js` |
@@ -95,4 +110,6 @@ Regenerate: `git diff --name-status 4c31b51 HEAD -- editor/`. M = modified, A = 
 | A | `editor/packages/scratch-vm/test/unit/extension_picar.js` |
 | A | `editor/packages/scratch-vm/test/unit/extension_picar_carlink.js` |
 | A | `editor/packages/scratch-vm/test/unit/extension_picar_examples.js` |
-| M | `editor/packages/scratch-gui/src/components/action-menu/icon--sprite.svg` |
+| A | `editor/packages/scratch-vm/test/unit/extension_picar_finalreview.js` |
+| A | `editor/packages/scratch-vm/test/unit/extension_picar_reverify.js` |
+| A | `editor/packages/scratch-vm/test/unit/extension_picar_stagemirror.js` |
