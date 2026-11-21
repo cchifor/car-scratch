@@ -76,38 +76,50 @@ class Ultrasonic:
             self._busy_since = None
         g.setup(p, g.OUT, initial=g.LOW)
         c.sleep(0.002)
+        # The "nothing there" time of this ping (D7) is taken before the trigger: a stall anywhere after this only
+        # makes it earlier than the real ping, never later.
+        self.ping_start = c.monotonic()
         g.output(p, 1)
         c.sleep(0.00001)
         g.output(p, 0)
         g.setup(p, g.IN)
-        t0 = c.monotonic()
+        t0 = prev = c.monotonic()
         # A late-detected rising edge only shortens the echo (reads closer: the safe side), so gaps while
         # waiting for it are tolerated. A late-detected falling edge lengthens it (reads farther: unsafe),
         # so any gap while the echo is high discards the ping, and the end time is taken inside the loop.
+        unwatched = False
         while g.input(p) == 0:
-            if c.monotonic() - t0 > ECHO_START_TIMEOUT_S:
+            now = c.monotonic()
+            unwatched = unwatched or now - prev > MAX_GAP_S
+            prev = now
+            if now - t0 > ECHO_START_TIMEOUT_S:
+                if unwatched:
+                    self.lost_echo_cm = 0.0    # not watching for a while: a whole echo may have come and gone
                 return None
-        start = prev = last_high = c.monotonic()
-        self.ping_start = start
+        start = prev = c.monotonic()
+        last_high: Optional[float] = None      # a time at which the line is known to have been high (lower bound)
         gap = False
         while True:
             high = g.input(p) == 1
             now = c.monotonic()
             gap = gap or now - prev > MAX_GAP_S
+            seen_after = prev                  # this read happened after `prev` was taken (before `now`)
             prev = now
             if not high:
                 break
-            last_high = now
+            last_high = seen_after
             if now - start > ECHO_STUCK_S:
                 self._busy_since = start       # the pin stays an input; the next ping checks the line first
                 self.busy_started = not gap    # 40 ms without an echo, timed cleanly: a "nothing there" reading
                 return BUSY
         dur = now - start
         if gap:
-            # The timing is untrustworthy, but the echo may have ended within range: it ended after last_high, so it
-            # was at least this close. Keep that as an echo (it vetoes the D7 trust) even though the ping is dropped.
-            if last_high - start <= ECHO_FAR_S:
-                self.lost_echo_cm = (last_high - start) * 34300 / 2
+            # The timing is untrustworthy, but the echo may have ended within range: it ended after last_high (and
+            # the echo began no later than `start`), so it was at least this close. Keep that as an echo (it vetoes
+            # the D7 trust) even though the ping is dropped.
+            lo = 0.0 if last_high is None else max(0.0, last_high - start)
+            if lo <= ECHO_FAR_S:
+                self.lost_echo_cm = lo * 34300 / 2
             return None
         if dur > ECHO_FAR_S:
             return FAR

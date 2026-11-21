@@ -222,6 +222,13 @@ an older "nothing there". All three are fixed as above, each with a test, plus i
 sensor code into the controller on one clock (open-space rhythm keeps driving; a line stuck high after one cycle
 stops within the window; a dropped near echo blocks the trust).
 
+**Fourth review round** found three timing and settings gaps, fixed with tests that try a stall at every
+instruction position: a stall between a pin read and its timestamp could hide a near echo (each read is now
+bounded by the timestamp taken before it, and a ping whose echo window was not watched counts as a possible echo);
+a stall at the rising edge could make the reading's time late (it is now taken before the trigger, so it is never
+later than the ping); and echoes were judged "near" against the settings at the time they were heard (the last
+second of echoes is kept and judged against the current stop distance).
+
 **Residual.** For up to 0.48 s the car drives on a reading that said nothing was in range: something that moves into
 the path in that time, or a reflector the module cannot hear (which can already read `far`), is not seen until the
 next reading.

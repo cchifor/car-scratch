@@ -8,6 +8,7 @@ that needs the loop (events, `done`) is handed over through `_defer` + `_kick`.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import collections
 import copy
 import logging
@@ -90,7 +91,7 @@ class Controller:
         self._sample_at = now
         self._last_good_t: Optional[float] = None   # last ok/far sample; None until the first one
         self._last_clear_t: Optional[float] = None  # last "nothing there" reading (Sample.clear_t, decision D7)
-        self._last_near_t: Optional[float] = None   # last echo closer than the D7 near distance
+        self._echoes: deque = deque()               # (time, cm) of echoes heard in the last NEAR_ECHO_MEMORY_S (D7)
         self._last_echo_t: Optional[float] = None   # last echo of any distance (a "nothing there" must be newer)
         self._clear_since: Optional[float] = None
         self._last_ok: Optional[tuple[float, float]] = None   # (cm, time) of the latest ok sample, cleared by a far one
@@ -321,12 +322,14 @@ class Controller:
     def _trusted_clear_locked(self, now: float) -> bool:
         """A "nothing there" reading at most NO_ECHO_TRUST_S old, and no echo closer than TRUST_NEAR_CM heard in the
         last NEAR_ECHO_MEMORY_S (decision D7). Caller holds self._lock."""
-        c, n, e = self._last_clear_t, self._last_near_t, self._last_echo_t
+        c, e = self._last_clear_t, self._last_echo_t
         if c is None or now - c > safety.NO_ECHO_TRUST_S:
             return False
         if e is not None and e >= c:
             return False                   # an echo heard after it: that is the newer information
-        return n is None or now - n > safety.NEAR_ECHO_MEMORY_S
+        # judged against the current settings: raising stop_cm makes recent echoes near
+        near_cm = max(safety.TRUST_NEAR_CM, 2.0 * self._margin(safety.SPEED_MAX))
+        return not any(now - t <= safety.NEAR_ECHO_MEMORY_S and cm < near_cm for t, cm in self._echoes)
 
     def _fresh_locked(self, now: float) -> bool:
         """Forward motion may start or continue: an ok/far distance measured at most SENSOR_STALE_S ago, or a trusted
@@ -655,8 +658,9 @@ class Controller:
             echoes = [c for c in (s.echo_cm, s.dist_cm if s.dist_state == DIST_OK else None) if c is not None]
             if echoes:
                 self._last_echo_t = min(now, s.t)
-                if min(echoes) < max(safety.TRUST_NEAR_CM, 2.0 * self._margin(safety.SPEED_MAX)):
-                    self._last_near_t = min(now, s.t)
+                self._echoes.append((self._last_echo_t, min(echoes)))
+            while self._echoes and now - self._echoes[0][0] > safety.NEAR_ECHO_MEMORY_S:
+                self._echoes.popleft()
             if s.clear_t is not None and s.dist_state in (DIST_FAR, DIST_NONE):
                 self._last_clear_t = min(now, s.clear_t)
             fault_now = s.dist_state == DIST_FAULT

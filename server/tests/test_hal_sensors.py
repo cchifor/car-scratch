@@ -1,6 +1,8 @@
 """Ultrasonic, PCF8591 and line-follower behaviour (scripted echoes, fake clock: no real waiting)."""
 import logging
 
+import pytest
+
 from fakes_hw import FakeBus, FakeClock, FakeGPIO
 from picar_server.hal.real import RealBackend
 from picar_server.hal.sensors import BUSY
@@ -208,6 +210,31 @@ def test_a_discarded_near_echo_is_still_an_echo():
     clock.gap_after(60, 0.002)
     s = b.hub.read()
     assert s.clear_t is None and s.echo_cm is not None and s.echo_cm <= 50.5
+
+
+@pytest.mark.parametrize("gap_s", [0.004, 0.020])
+def test_a_timing_gap_anywhere_never_hides_a_near_echo(gap_s):
+    # Fourth review: a stall between the pin read and its timestamp hid a 50 cm echo or made it read ~80 cm.
+    # Every stall position through the 50 cm ping: the echo is measured, or kept as an echo no farther than it was.
+    for at in range(1, 200, 2):
+        b, bus, gpio, clock = make()
+        gpio.queue(gpio.echo_cm(50), (0.0003, 0.027), gpio.long_cycle())
+        clock.gap_after(at, gap_s)
+        s = b.hub.read()
+        assert s.echo_cm is not None and s.echo_cm <= 50.5, (at, s)
+        assert s.clear_t is None, (at, s)
+
+
+@pytest.mark.parametrize("gap_s", [0.004, 0.2])
+def test_a_timing_gap_anywhere_never_makes_the_no_echo_later_than_the_ping(gap_s):
+    # Fourth review: a stall at the rising edge made clear_t 200 ms late, stretching the D7 window.
+    for at in range(1, 120, 2):
+        b, bus, gpio, clock = make()
+        gpio.queue(gpio.long_cycle(width=5.0))
+        clock.gap_after(at, gap_s)
+        s = b.hub.read()
+        if s.clear_t is not None:
+            assert s.clear_t <= gpio._busy_from, (at, s.clear_t, gpio._busy_from)
 
 
 def test_a_long_cycle_begun_during_a_timing_gap_is_not_a_no_echo():

@@ -123,6 +123,19 @@ def test_an_echo_after_the_no_echo_cancels_the_trust():
     assert code(r, "drive", dir="forward", speed=100) in ("sensor_fault", "obstacle_blocked")
 
 
+def test_raising_stop_cm_reclassifies_recent_echoes():
+    # Fourth review: an echo heard as "not near" must count as near once stop_cm is raised within the memory.
+    r = started_rig()
+    feed(r, state=DIST_OK, cm=105.0)                    # not near with the default stop distance
+    feed(r, clear=True)                                 # newer: nothing there
+    for _ in range(4):
+        feed(r)                                         # the 105 cm reading is no longer fresh; the trust is
+    assert r.cmd("drive", dir="forward", speed=30) == {"speed": 30}
+    r.cmd("stop")
+    r.cmd("config", stop_cm=100)                        # now 105 cm, heard 0.2 s ago, is within the near distance
+    assert code(r, "drive", dir="forward", speed=100) == "sensor_fault"
+
+
 def test_a_far_echo_before_the_no_echo_keeps_the_trust():
     r = started_rig()
     feed(r, echo_cm=150.0)
@@ -229,6 +242,25 @@ def test_integrated_stuck_line_after_one_cycle_stops_within_the_window():
         assert car.hw.now - rise < 5.0
     stopped_after = car.hw.now - rise
     assert stopped_after <= safety.NO_ECHO_TRUST_S + 0.05, stopped_after
+
+
+def test_integrated_a_stall_anywhere_never_stretches_the_window():
+    # Fourth review: a 200 ms stall at the rising edge kept forward motion on trust 608 ms after the ping.
+    for at in range(1, 60, 3):
+        car = Car()
+        car.gpio.default = (0.0003, 0.027)
+        for _ in range(5):
+            car.step()
+        car.drive()
+        car.gpio.queue(car.gpio.long_cycle(width=5.0))
+        car.hw.gap_after(at, 0.2)
+        while not car.gpio._busy():
+            car.step()
+        rise = car.gpio._busy_from
+        while car.driving():
+            car.step()
+            assert car.hw.now - rise < 5.0
+        assert car.hw.now - rise <= safety.NO_ECHO_TRUST_S + 0.05, (at, car.hw.now - rise)
 
 
 def test_integrated_discarded_near_echo_blocks_the_trust():
