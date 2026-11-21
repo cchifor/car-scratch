@@ -122,15 +122,32 @@ def key_to_action(key: str) -> Optional[str]:
 
 
 class KeyReader:
-    """Reads keys on a helper thread (termios cbreak + select, or msvcrt) and feeds an asyncio queue."""
+    """Reads keys on a helper thread (termios cbreak + select, or msvcrt) and calls on_key(token) on the loop thread.
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, queue: "asyncio.Queue[str]"):
-        self.loop, self.queue, self._stop = loop, queue, False
+    There is no queue here: the Driver acts on each key as it arrives. Any failure of the input thread calls
+    on_fail(reason) so the caller can stop the car and leave (a dead keyboard must never leave a speed active)."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, on_key: Callable[[str], None],
+                 on_fail: Callable[[str], None]):
+        self.loop, self.on_key, self.on_fail, self._stop = loop, on_key, on_fail, False
         self._thread = None
         self._saved = None
 
     def _push(self, key: str) -> None:
-        self.loop.call_soon_threadsafe(self.queue.put_nowait, key)
+        self.loop.call_soon_threadsafe(self.on_key, key)
+
+    def _fail(self, reason: str) -> None:
+        if not self._stop:
+            try:
+                self.loop.call_soon_threadsafe(self.on_fail, reason)
+            except RuntimeError:                     # loop already closed
+                pass
+
+    def _guard(self, fn: Callable[[], None]) -> None:
+        try:
+            fn()
+        except BaseException as e:                   # noqa: BLE001 - any death of the input thread is a failure
+            self._fail(f"keyboard input failed: {e!r}")
 
     def start(self) -> None:
         import threading
@@ -146,7 +163,7 @@ class KeyReader:
             attrs[3] &= ~termios.ISIG                # Ctrl-C arrives as a key, so we always get to stop the car
             termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
             target = self._run_posix
-        self._thread = threading.Thread(target=target, daemon=True)
+        self._thread = threading.Thread(target=self._guard, args=(target,), daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -165,11 +182,12 @@ class KeyReader:
                 if not ready:
                     continue
                 data = os.read(fd, 64)
-            except (OSError, ValueError):
-                break
+            except (OSError, ValueError) as e:
+                self._fail(f"keyboard input failed: {e!r}")
+                return
             if not data:
-                self._push("ctrl-c")                 # stdin closed: stop the car and leave
-                break
+                self._fail("keyboard input closed (stdin EOF)")
+                return
             for k in decode_posix(data.decode("utf-8", "ignore")):
                 self._push(k)
 
@@ -241,6 +259,8 @@ class DriveState:
         return []
 
 
+SAFETY_ACTIONS = ("stop", "estop", "quit")
+
 STOPPING_EVENTS = ("obstacle_stop", "estop", "watchdog_stop", "hold", "reverse_timeout", "drive_timeout",
                    "sensor_fault", "hw_fault")
 
@@ -255,48 +275,133 @@ class Driver:
         self.ack_steer: Optional[float] = None
         self._generation = -1
         self.done = asyncio.Event()
+        self.failed: Optional[str] = None           # set when the keyboard died: the caller prints it and exits 1
+        self._pending: dict[str, tuple] = {}        # motion commands not yet sent, coalesced: only the latest of each kind
+        self._wake = asyncio.Event()
+        self._busy = False                          # one motion command in flight at most
+        self._epoch = 0                             # bumped by every safety key; stale replies are ignored
+        self._fires: set = set()
+        self._worker: Optional[asyncio.Task] = None
+
+    def start(self) -> None:
+        self._worker = asyncio.create_task(self._run())
 
     def sync(self) -> None:
-        """A new connection starts on hold with the car stopped: forget the old target."""
+        """A new connection starts on hold with the car stopped: forget the old target and everything unsent."""
         if self._generation != self.link.generation:
             self._generation = self.link.generation
             self.state = DriveState.from_welcome(self.link.welcome)
             self.ack_speed = None
+            self._pending.clear()
+            self._epoch += 1
 
     def on_event(self, kind: str) -> None:
         if kind in STOPPING_EVENTS:
             self.state.speed = 0
             self.ack_speed = None
 
-    async def handle(self, action: str) -> None:
+    # -- input. Called on the loop thread for every key; never blocks.
+    def submit(self, key: str) -> None:
+        action = key_to_action(key)
+        if action:
+            self.act(action)
+
+    def fail(self, reason: str) -> None:
+        """The keyboard is gone: stop the car and leave through the normal exit path."""
+        if self.failed is None:
+            self.failed = reason
+            self.link.note_error(reason)
+        self.act("quit")
+
+    def act(self, action: str) -> None:
         self.sync()
-        client = self.link.client
+        if action in SAFETY_ACTIONS:
+            # Stop / E-STOP / quit bypass everything: unsent motion is dropped and the frame goes out at once,
+            # without waiting for a reply or for any in-flight command.
+            self._pending.clear()
+            self._epoch += 1
+            self.ack_speed = None
+            for op, fields in self.state.apply(action):
+                self._fire(op, fields)
+            if self.state.quit:
+                self.done.set()
+            return
+        if self.link.client is None:
+            self.link.note_error("not connected: key ignored")
+            return
         for op, fields in self.state.apply(action):
-            if client is None:
-                self.link.note_error("not connected")
-                continue
-            try:
-                reply = await client.cmd(op, **fields)
-            except (asyncio.TimeoutError, ConnectionError, RuntimeError) as e:
-                self.link.note_error(f"{op}: {e or 'no reply'}")
-                continue
-            if reply.get("t") == "ack":
-                if op == "drive":
-                    self.ack_speed = reply.get("speed")
-                elif op in ("stop", "estop"):
-                    self.ack_speed = None
-                elif op == "steer":
-                    self.ack_steer = reply.get("angle")
-            else:
-                self.link.note_error(f"{op}: {reply.get('code')}: {reply.get('msg')}")
-                if op == "drive":                    # refused: the car is not moving, do not keep a stale target
-                    self.state.speed = 0
-                    self.ack_speed = None
-        if self.state.quit:
-            self.done.set()
+            kind = "drive" if op in ("drive", "stop") else op
+            self._pending.pop(kind, None)
+            self._pending[kind] = (self.link.generation, op, fields)
+        self._wake.set()
+
+    def _fire(self, op: str, fields: dict) -> None:
+        client = self.link.client
+        if client is None:
+            return
+        t = asyncio.ensure_future(self._fire_now(client, op, fields))
+        self._fires.add(t)
+        t.add_done_callback(self._fires.discard)
+
+    async def _fire_now(self, client: Any, op: str, fields: dict) -> None:
+        try:
+            await client.fire(op, **fields)
+        except Exception as e:                       # noqa: BLE001
+            self.link.note_error(f"{op}: {e or 'send failed'}")
+
+    # -- worker: sends the coalesced motion commands one at a time
+    _ORDER = {"resume": 0, "estop_reset": 1, "steer": 2, "drive": 3}
+
+    async def _run(self) -> None:
+        while True:
+            await self._wake.wait()
+            self._wake.clear()
+            while self._pending:
+                kind = min(self._pending, key=lambda k: self._ORDER.get(k, 9))
+                gen, op, fields = self._pending.pop(kind)
+                if gen != self.link.generation:      # queued before a (re)connect: never replayed
+                    continue
+                self._busy = True
+                try:
+                    await self._send(op, fields)
+                finally:
+                    self._busy = False
+
+    async def drain(self) -> None:
+        """Wait until nothing is pending or in flight (tests)."""
+        while self._pending or self._busy:
+            await asyncio.sleep(0)
+        for t in list(self._fires):
+            await t
+
+    async def _send(self, op: str, fields: dict) -> None:
+        client, epoch = self.link.client, self._epoch
+        if client is None:
+            self.link.note_error("not connected")
+            return
+        try:
+            reply = await client.cmd(op, **fields)
+        except (asyncio.TimeoutError, ConnectionError, RuntimeError) as e:
+            self.link.note_error(f"{op}: {e or 'no reply'}")
+            return
+        if reply.get("t") == "ack":
+            if epoch != self._epoch:                 # a safety key came in meanwhile: this reply is history
+                return
+            if op == "drive":
+                self.ack_speed = reply.get("speed")
+            elif op == "steer":
+                self.ack_steer = reply.get("angle")
+        else:
+            self.link.note_error(f"{op}: {reply.get('code')}: {reply.get('msg')}")
+            if op == "drive" and epoch == self._epoch:   # refused: the car is not moving, drop the stale target
+                self.state.speed = 0
+                self.ack_speed = None
 
     async def shutdown(self) -> None:
         """Always: stop the car and release control (also after an exception)."""
+        if self._worker:
+            self._worker.cancel()
+        self._pending.clear()
         client = self.link.client
         if client is None:
             return
@@ -832,7 +937,7 @@ async def run_dashboard(args: argparse.Namespace, driving: bool) -> int:
     if driver:
         link.listeners.append(driver.on_event)
     runner = asyncio.create_task(link.run())
-    keys = consumer = None
+    keys = None
     try:
         if driving:
             try:
@@ -845,17 +950,10 @@ async def run_dashboard(args: argparse.Namespace, driving: bool) -> int:
             if link.client.role != "controller":
                 print("someone else is driving the car; use --force to take control", flush=True)
                 return 1
-            queue: asyncio.Queue = asyncio.Queue()
-            keys = KeyReader(asyncio.get_running_loop(), queue)
-            keys.start()
-
-            async def consume() -> None:
-                while True:
-                    action = key_to_action(await queue.get())
-                    if action:
-                        await driver.handle(action)
-
-            consumer = asyncio.create_task(consume())
+            driver.sync()
+            driver.start()
+            keys = KeyReader(asyncio.get_running_loop(), driver.submit, driver.fail)
+            keys.start()                             # keys typed before this point are never read
         with Live(console=console, screen=True, auto_refresh=False) as live:
             while not runner.done() and not (driver and driver.done.is_set()):
                 if driver:
@@ -865,6 +963,9 @@ async def run_dashboard(args: argparse.Namespace, driving: bool) -> int:
                 w, h = console.size
                 live.update(render_dashboard(v, w, h), refresh=True)
                 await asyncio.sleep(0.125)
+        if driver and driver.failed:
+            print(f"{driver.failed}; car stopped, control released", flush=True)
+            return 1
         if link.fatal:
             print(link.fatal, flush=True)
             return 1
@@ -872,8 +973,6 @@ async def run_dashboard(args: argparse.Namespace, driving: bool) -> int:
     finally:
         if keys:
             keys.stop()
-        if consumer:
-            consumer.cancel()
         if driving:
             await driver.shutdown()
         await link.stop()

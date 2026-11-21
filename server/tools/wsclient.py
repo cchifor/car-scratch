@@ -142,6 +142,11 @@ class Client:
             reply["_done"] = done_fut
         return reply
 
+    async def fire(self, op: str, **fields: Any) -> None:
+        """Send a cmd without waiting for its reply (safety stops: nothing may queue ahead of them)."""
+        self._next_id += 1
+        await self._ws.send_json({"t": "cmd", "id": self._next_id, "op": op, **fields})
+
     async def send(self, msg: dict) -> None:
         await self._ws.send_json(msg)
 

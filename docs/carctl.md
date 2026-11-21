@@ -130,3 +130,9 @@ from another controller).
   latches hold. After a dropped connection carctl reconnects, drops your old target (the car is stopped and on hold)
   and you press R to continue.
 - Obstacle stop is still enforced by the server. Reverse is capped at 40 and limited to 5 s.
+- Space, E and Q/Ctrl-C act immediately: they are sent without waiting for earlier commands and drop any unsent
+  speed or steering changes. Fast key repeat is coalesced, so only the latest target is ever sent.
+- After a reconnect, keys pressed before the drop are discarded and the target starts at 0 / centre; press R and
+  drive again.
+- If the keyboard input fails (terminal closed, read error), carctl stops the car, releases control and exits with
+  an error instead of leaving the last speed running.

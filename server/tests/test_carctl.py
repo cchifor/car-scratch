@@ -86,12 +86,20 @@ def test_other_actions_and_quit():
 
 
 class FakeClient:
-    def __init__(self, replies=None):
-        self.sent, self.frames, self.replies, self.role = [], [], replies or {}, "controller"
+    """Records cmd() (awaits an ack, optionally held back by `gate`) and fire() (fire-and-forget) calls."""
+
+    def __init__(self, replies=None, gate=None):
+        self.sent, self.fired, self.frames, self.replies, self.role = [], [], [], replies or {}, "controller"
+        self.gate = gate
 
     async def cmd(self, op, **f):
         self.sent.append((op, f))
+        if self.gate is not None:
+            await self.gate.wait()
         return self.replies.get(op, {"t": "ack", "ok": True, **({"speed": f["speed"]} if "speed" in f else {})})
+
+    async def fire(self, op, **f):
+        self.fired.append((op, f))
 
     async def send(self, msg):
         self.frames.append(msg)
@@ -108,40 +116,143 @@ class FakeLink:
         self.errors.append(text)
 
 
+async def make_driver(client=None, **kw):
+    link = FakeLink(client or FakeClient(**kw))
+    d = carctl.Driver(link)
+    d.start()
+    return d, link
+
+
 async def test_driver_sends_commands_and_quit_stops_and_releases():
-    c = FakeClient()
-    d = carctl.Driver(FakeLink(c))
-    for a in ("resume", "speed+", "speed+", "steer-", "speed-", "speed-", "quit"):
-        await d.handle(a)
-    assert c.sent == [("resume", {}), ("drive", {"dir": "forward", "speed": 10}), ("drive", {"dir": "forward", "speed": 20}),
-                      ("steer", {"angle": -10}), ("drive", {"dir": "forward", "speed": 10}), ("stop", {}), ("stop", {})]
-    assert d.done.is_set()
-    c.sent.clear()
+    d, link = await make_driver()
+    c = link.client
+    for a in ("resume", "speed+", "steer-"):
+        d.act(a)
+        await d.drain()
+    assert c.sent == [("resume", {}), ("drive", {"dir": "forward", "speed": 10}), ("steer", {"angle": -10})]
+    d.act("quit")                                                # a safety key: fired at once, not queued
+    await d.drain()
+    assert c.fired == [("stop", {})] and d.done.is_set() and d.state.speed == 0
     await d.shutdown()                                           # always: stop, then give control back
-    assert c.sent == [("stop", {})] and c.frames == [{"t": "control", "action": "release"}]
+    assert c.sent[-1] == ("stop", {}) and c.frames == [{"t": "control", "action": "release"}]
 
 
 async def test_driver_refused_drive_clears_target_and_records_error():
-    c = FakeClient({"drive": {"t": "err", "code": "hold", "msg": "motion is on hold; send resume"}})
-    link = FakeLink(c)
-    d = carctl.Driver(link)
-    await d.handle("speed+")
+    d, link = await make_driver(replies={"drive": {"t": "err", "code": "hold", "msg": "motion is on hold; send resume"}})
+    d.act("speed+")
+    await d.drain()
     assert d.state.speed == 0 and d.ack_speed is None
     assert link.errors == ["drive: hold: motion is on hold; send resume"]
+    await d.shutdown()
 
 
 async def test_driver_forgets_target_after_reconnect_and_safety_events():
-    c = FakeClient()
-    link = FakeLink(c)
-    d = carctl.Driver(link)
-    await d.handle("speed+")
+    d, link = await make_driver()
+    d.act("speed+")
+    await d.drain()
     assert d.state.speed == 10 and d.ack_speed == 10
     d.on_event("obstacle_stop")
     assert d.state.speed == 0
-    await d.handle("speed+")
+    d.act("speed+")
     link.generation = 2                                          # reconnect: the car is stopped and on hold again
     d.sync()
-    assert d.state.speed == 0
+    assert d.state.speed == 0 and d.state.steer == 0
+    await d.shutdown()
+
+
+async def test_safety_keys_bypass_a_stuck_motion_backlog():
+    gate = asyncio.Event()                                       # the server never answers: acks held back
+    d, link = await make_driver(gate=gate)
+    c = link.client
+    for _ in range(50):                                          # key-repeat flood
+        d.act("speed+")
+        d.act("steer+")
+    await asyncio.sleep(0)
+    assert len(c.sent) == 1                                      # never more than one in flight
+    assert len(d._pending) <= 2                                  # bounded: only the latest target of each kind
+    d.submit(" ")                                                # Space
+    await asyncio.sleep(0)
+    assert c.fired == [("stop", {})]                             # on the wire immediately, no ack awaited
+    assert not d._pending and d.state.speed == 0
+    d.submit("e")
+    await asyncio.sleep(0)
+    assert c.fired[-1] == ("estop", {})
+    d.submit("q")
+    await asyncio.sleep(0)
+    assert c.fired[-1] == ("stop", {}) and d.done.is_set()
+    gate.set()
+    await d.drain()
+    assert len(c.sent) == 1                                      # the dropped backlog was never sent
+    await d.shutdown()
+
+
+async def test_motion_keys_coalesce_to_latest_target():
+    gate = asyncio.Event()
+    d, link = await make_driver(gate=gate)
+    d.act("speed+")                                              # in flight (waiting for its ack)
+    await asyncio.sleep(0)
+    for _ in range(4):
+        d.act("speed+")
+    gate.set()
+    await d.drain()
+    assert link.client.sent == [("drive", {"dir": "forward", "speed": 10}), ("drive", {"dir": "forward", "speed": 50})]
+    await d.shutdown()
+
+
+async def test_keys_queued_before_a_reconnect_are_discarded():
+    gate = asyncio.Event()
+    d, link = await make_driver(gate=gate)
+    d.act("resume")                                              # in flight
+    await asyncio.sleep(0)
+    d.act("speed+")                                              # queued behind it
+    d.act("steer+")
+    link.generation = 2                                          # the socket dropped and came back (on hold)
+    link.client = FakeClient()
+    gate.set()
+    await d.drain()
+    d.sync()
+    assert link.client.sent == [] and link.client.fired == []    # nothing replayed on the new connection
+    assert d.state.speed == 0 and d.state.steer == 0
+    d.act("speed+")                                              # fresh key presses work again
+    await d.drain()
+    assert link.client.sent == [("drive", {"dir": "forward", "speed": 10})]
+    await d.shutdown()
+
+
+async def test_keys_while_disconnected_are_ignored():
+    d, link = await make_driver()
+    link.client = None
+    d.act("speed+")
+    assert not d._pending and d.state.speed == 0 and link.errors
+    await d.shutdown()
+
+
+async def test_input_failure_stops_car_and_exits():
+    d, link = await make_driver()
+    d.act("speed+")
+    await d.drain()
+    d.fail("keyboard input failed: OSError(5)")
+    assert d.failed and d.done.is_set() and d.state.speed == 0
+    await d.drain()
+    assert link.client.fired == [("stop", {})] and "keyboard input failed" in link.errors[0]
+    await d.shutdown()
+
+
+async def test_keyreader_thread_failure_calls_on_fail(monkeypatch):
+    got = []
+    loop = asyncio.get_running_loop()
+    r = carctl.KeyReader(loop, lambda k: got.append(("key", k)), lambda why: got.append(("fail", why)))
+
+    def boom():
+        raise OSError(5, "I/O error")
+
+    r._guard(boom)                                               # what the thread wrapper does on any exception
+    await asyncio.sleep(0.05)
+    assert got and got[0][0] == "fail" and "OSError" in got[0][1]
+    r.stop()
+    r._guard(boom)                                               # after a normal stop(), no spurious failure
+    await asyncio.sleep(0.05)
+    assert len(got) == 1
 
 
 # ---- dashboard rendering ------------------------------------------------------------------------------------
