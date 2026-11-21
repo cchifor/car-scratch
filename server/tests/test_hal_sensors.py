@@ -297,6 +297,30 @@ def test_a_pause_at_the_echos_end_never_reads_farther():
         assert v is None or v <= HIDDEN_CM + 0.1, (at, v)
 
 
+@pytest.mark.parametrize("width_ms", [0.5, 2.0, 5.83, 11.9, 12.0, 12.1, 13.0, 27.0])
+def test_a_reading_is_never_farther_than_the_echo_for_any_width_or_pause(width_ms):
+    # Never farther than the truth (a width over 12 ms is "far": nothing within ~2 m, which is the truth then).
+    true_cm = width_ms / 1000 * 34300 / 2
+    for pause in (0.0, 0.0003, 0.0008):
+        for at in range(1, 160, 3):
+            b, bus, gpio, clock = make()
+            gpio.default = (0.0003, width_ms / 1000)
+            if pause:
+                clock.gap_after(at, pause)
+            v = b.hub.us.ping()
+            if v is None or v == FAR:
+                assert v is None or width_ms > 12.0 - 0.1, (width_ms, pause, at, v)
+            else:
+                assert v <= true_cm + 0.1, (width_ms, pause, at, v)
+
+
+def test_an_echo_shorter_than_one_poll_reads_as_zero_not_far():
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.00001)                     # 10 us: over before the loop reads the line again
+    v = b.hub.us.ping()
+    assert v is not None and v != FAR and v <= 0.5
+
+
 def test_echo_time_is_the_start_of_the_samples_pings():
     b, bus, gpio, clock = make()
     gpio.queue(gpio.echo_cm(50), gpio.echo_cm(50), gpio.echo_cm(50))
