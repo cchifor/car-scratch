@@ -5,6 +5,7 @@ bit-banged on a GPIO and needs no lock. Timing sources are injectable so tests s
 """
 from __future__ import annotations
 
+import collections
 import logging
 import statistics
 import time
@@ -57,6 +58,7 @@ class Ultrasonic:
         self.busy_started = False                  # the last ping() began a long cycle cleanly (not: found it busy)
         self.ping_start: Optional[float] = None    # the last ping()'s echo rise (its "nothing there" time)
         self.lost_echo_cm: Optional[float] = None  # the last ping() was discarded but may have been an echo this close
+        self.discards: collections.Counter = collections.Counter()   # why pings gave no reading (logged per minute)
         self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
         self.echo_cm: Optional[float] = None       # measure(): closest echo heard
 
@@ -72,7 +74,10 @@ class Ultrasonic:
             # driving the pin low would fight the module's output. Report busy until the line drops; a line high
             # for longer than any module cycle is stuck (None, which counts toward the fault).
             if g.input(p) == 1:
-                return BUSY if c.monotonic() - self._busy_since <= BUSY_CYCLE_MAX_S else None
+                if c.monotonic() - self._busy_since <= BUSY_CYCLE_MAX_S:
+                    return BUSY
+                self.discards["stuck"] += 1
+                return None
             self._busy_since = None
         g.setup(p, g.OUT, initial=g.LOW)
         c.sleep(0.002)
@@ -95,6 +100,7 @@ class Ultrasonic:
             if now - t0 > ECHO_START_TIMEOUT_S:
                 if unwatched:
                     self.lost_echo_cm = 0.0    # not watching for a while: a whole echo may have come and gone
+                self.discards["unwatched" if unwatched else "no_rise"] += 1
                 return None
         start = prev = c.monotonic()
         last_high: Optional[float] = None      # a time at which the line is known to have been high (lower bound)
@@ -118,8 +124,10 @@ class Ultrasonic:
             # the echo began no later than `start`), so it was at least this close. Keep that as an echo (it vetoes
             # the D7 trust) even though the ping is dropped.
             lo = 0.0 if last_high is None else max(0.0, last_high - start)
-            if lo <= ECHO_FAR_S:
-                self.lost_echo_cm = lo * 34300 / 2
+            if lo > ECHO_FAR_S:
+                return FAR                     # seen high past 12 ms: no echo ended within range, the answer is certain
+            self.lost_echo_cm = lo * 34300 / 2
+            self.discards["gap"] += 1
             return None
         if dur > ECHO_FAR_S:
             return FAR
@@ -162,6 +170,7 @@ class SensorHub:
         self.us = Ultrasonic(gpio, clock, us_pin)
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
+        self._discard_log_t = clock.monotonic()
         self.clear_t: Optional[float] = None       # this sample's "nothing there" time (D7), see Sample.clear_t
         self.echo_cm: Optional[float] = None       # this sample's closest echo, see Sample.echo_cm
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
@@ -194,6 +203,7 @@ class SensorHub:
         forward = l > 0 or r > 0
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
+        self._log_discards()
         self.echo_cm = self.us.echo_cm
         self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
         if v is BUSY:
@@ -214,6 +224,17 @@ class SensorHub:
             return None, DIST_FAR
         self._last_cm, self._last_far = v, False
         return v, DIST_OK
+
+    def _log_discards(self) -> None:
+        now = self.clock.monotonic()
+        if now - self._discard_log_t < 60.0:
+            return
+        d = self.us.discards
+        if sum(d.values()):
+            log.info("ultrasonic: pings discarded in the last %.0f s: %s", now - self._discard_log_t,
+                     " ".join(f"{k} {v}" for k, v in sorted(d.items())))
+        d.clear()
+        self._discard_log_t = now
 
     # -- PCF8591 ----------------------------------------------------------------------------------------
     def _channels(self) -> Sequence[int]:

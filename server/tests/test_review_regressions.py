@@ -416,6 +416,7 @@ def test_lowering_speed_limit_stops_when_the_running_motion_no_longer_validates(
     r.cmd("drive", dir="forward", speed=60)
     assert r.backend.duty != (0, 0)
     r.ctl._last_good_t = r.clock() - 10.0                   # the distance sensor went stale
+    r.ctl._echoes.clear()                                    # (and no recent echo to drive on, D8)
     r.cmd("config", speed_limit=30)
     assert r.backend.duty == (0, 0)
 

@@ -331,28 +331,39 @@ class Controller:
         near_cm = max(safety.TRUST_NEAR_CM, 2.0 * self._margin(safety.SPEED_MAX))
         return not any(now - t <= safety.NEAR_ECHO_MEMORY_S and cm < near_cm for t, cm in self._echoes)
 
-    def _fresh_locked(self, now: float) -> bool:
-        """Forward motion may start or continue: an ok/far distance measured at most SENSOR_STALE_S ago, or a trusted
-        "nothing there" reading. Caller holds self._lock."""
+    def _known_clear_locked(self, now: float, margin: float) -> bool:
+        """Decision D8: every echo heard in the last NO_ECHO_TRUST_S, minus the farthest the car could have travelled
+        since (at the speed limit's ground speed, plus KNOWN_SLACK_S to the next check), is still at or beyond the
+        stopping margin. Caller holds self._lock."""
+        recent = [(t, cm) for t, cm in self._echoes if now - t <= safety.NO_ECHO_TRUST_S]
+        if not recent:
+            return False
+        v = safety.speed_cm_s(min(safety.SPEED_MAX, self.cfg["speed_limit"]), self.cal)
+        return all(cm - v * (now - t + safety.KNOWN_SLACK_S) >= margin for t, cm in recent)
+
+    def _fresh_locked(self, now: float, margin: float) -> bool:
+        """Forward motion at this stopping margin may start or continue: an ok/far distance measured at most
+        SENSOR_STALE_S ago, a trusted "nothing there" reading (D7), or a recent echo far enough away for the travel
+        since (D8). Caller holds self._lock."""
         if self._last_good_t is not None and now - self._last_good_t <= safety.SENSOR_STALE_S:
             return True
-        return self._trusted_clear_locked(now)
+        return self._trusted_clear_locked(now) or self._known_clear_locked(now, margin)
 
-    def _sensor_state(self, now: float) -> str:
-        """"ok" or the sensor_fault reason when forward motion must not be allowed."""
+    def _sensor_state(self, now: float, eff: float) -> str:
+        """"ok" or the sensor_fault reason when forward motion at effective speed `eff` must not be allowed."""
         with self._lock:
             if self._last_good_t is None and self._last_clear_t is None:
                 return "no valid sample yet"
             s = self._sample
             if s is not None and s.dist_state == DIST_FAULT:
                 return "ultrasonic fault"
-            if not self._fresh_locked(now):
+            if not self._fresh_locked(now, self._margin(eff)):
                 return "no fresh distance reading"
         return "ok"
 
     def _check_forward(self, eff: int) -> None:
         """Command-time check for forward motion at the proposed effective speed."""
-        why = self._sensor_state(self._clock())
+        why = self._sensor_state(self._clock(), eff)
         if why != "ok":
             raise CmdError("sensor_fault", why)
         if self.blocked:
@@ -666,7 +677,8 @@ class Controller:
             fault_now = s.dist_state == DIST_FAULT
             if fault_now != self._us_fault:
                 self._us_fault = fault_now
-                events.append(("sensor_fault" if fault_now else "sensor_ok", {"sensor": "ultrasonic"}))
+                events.append(("sensor_fault", {"sensor": "ultrasonic", "reason": "no_answer"}) if fault_now
+                              else ("sensor_ok", {"sensor": "ultrasonic"}))
             if s.line_raw is not None:
                 self._line_none_run = 0
                 self._line_last = (list(s.line_raw), now)
@@ -681,7 +693,7 @@ class Controller:
                     if line_ok != self._line_ok:
                         events.append(("sensor_ok" if line_ok else "sensor_fault", {"sensor": "line"}))
                     self._line_ok = line_ok
-            stale = not self._fresh_locked(now)
+            stale = not self._fresh_locked(now, margin)
             trusted_none = s.dist_state == DIST_NONE and self._trusted_clear_locked(now)
         reason = safety.guard_decision(s.dist_state, s.dist_cm, margin, moving_forward=forward,
                                        distance_guard=distance_guard, stale=stale)
@@ -691,8 +703,9 @@ class Controller:
                 self.blocked, self._clear_since = True, None
             if reason == "obstacle":
                 events.append(("obstacle_stop", {"cm": None if s.dist_cm is None else round(s.dist_cm, 1)}))
-            else:
-                events.append(("sensor_fault", {"sensor": "ultrasonic"}))
+            elif not any(k == "sensor_fault" and f.get("sensor") == "ultrasonic" for k, f in events):
+                events.append(("sensor_fault", {"sensor": "ultrasonic",
+                                                "reason": "no_answer" if s.dist_state == DIST_FAULT else "no_reading"}))
             self._defer("obstacle", events, move)
         else:
             self._update_clear(s, now, margin, distance_guard, trusted_none)
@@ -778,12 +791,19 @@ class Controller:
         if (motion_dir == "forward" and not self.cfg["obstacle_stop"] and self._move is None
                 and self._drive_since is not None and now - self._drive_since > safety.DRIVE_TIMEOUT_S):
             self._halt(None, [("drive_timeout", {})])
-        # sensor freshness: the loop's own check (the sensor thread may be gone)
-        if motion_dir == "forward" and now - self._sample_at > 0.5:
-            self.backend.inhibit_forward()
+        # sensor freshness, the loop's own checks (every tick, whether or not samples arrive): the distance rules
+        # (150 ms / D7 / D8), and a sensor thread that has stopped delivering samples at all
+        if motion_dir == "forward":
             with self._lock:
-                self.blocked, self._clear_since = True, None
-            self._halt("obstacle", [("sensor_fault", {"sensor": "ultrasonic"})])
+                fresh = self._fresh_locked(now, self._margin(self._eff))
+            why = None if fresh else "no_reading"
+            if now - self._sample_at > 0.5:
+                why = "no_samples"
+            if why:
+                self.backend.inhibit_forward()
+                with self._lock:
+                    self.blocked, self._clear_since = True, None
+                self._halt("obstacle", [("sensor_fault", {"sensor": "ultrasonic", "reason": why})])
         self._dead_reckon(dt)
         self._drain()
 

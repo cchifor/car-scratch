@@ -232,3 +232,36 @@ second of echoes is kept and judged against the current stop distance).
 **Residual.** For up to 0.48 s the car drives on a reading that said nothing was in range: something that moves into
 the path in that time, or a reflector the module cannot hear (which can already read `far`), is not seen until the
 next reading.
+
+## D8 — Near an obstacle, drive through missed readings while the last echo is far enough (owner decision, 2026-11-21)
+
+**Context.** A drive recorded on the car (8 minutes; telemetry, events and the sensor pin's raw pulses) showed
+about 20 forward stops labelled `sensor_fault`, none of them a sensor fault: each was a run of good echoes, then one
+long cycle (a missed reading, 400 ms) while driving toward something under 1 m away. Near an obstacle D7's trust is
+off, so one missed reading stopped the car. (The battery was low: 7 `power_low` events, and the Pi throttled, but the
+sensor still answered 99.9 % of pings with the motors running; low power was not the cause.)
+
+**Owner decision.** Keep driving through missed readings while the last measured distance, minus the farthest the
+car could have travelled since, stays above the stopping margin.
+
+**Rule.**
+
+1. Forward motion may also start or continue when every echo heard in the last 0.48 s (an `ok` reading, or any
+   ping's echo in the sample, including the lower bound of a ping dropped for a timing gap), minus the speed limit's
+   ground speed x (its age + 0.1 s), is at or beyond the stopping margin at the current speed. The 0.1 s covers the
+   time to the next check: a sample every 40 ms, and the controller loop now checks freshness on every 50 ms tick
+   as well, so this holds even if the sensor thread stalls (before, only a 0.5 s "no samples" fallback did).
+2. It never releases `blocked`.
+3. Example at the car's calibration (24.4 cm/s at full speed, 37 cm margin): an echo at 80 cm keeps it driving for up
+   to 0.48 s without readings; an echo at 50 cm stops it after 0.15 s as before.
+
+**Also changed (no decision needed).**
+
+- Ultrasonic `sensor_fault` events carry `reason`: `no_answer` (a real fault, paired with `sensor_ok`), `no_reading`
+  (a freshness stop) or `no_samples` (the sensor thread stopped delivering).
+- A ping whose timing loop was interrupted is still `far` when the line was seen high past 12 ms: no echo can have
+  ended within range. The recording showed 8 standstill faults made of good `far` answers thrown away this way.
+- The reasons pings give no reading (`no_rise`, `gap`, `unwatched`, `stuck`) are counted and logged once a minute.
+
+**Residual.** As D7: something that moves toward the car while it drives on an echo-based bound is seen only at the
+next reading.

@@ -3,7 +3,7 @@ the distance fresh for forward motion for 0.48 s counted from its ping, unless a
 closer than the near distance (1 m, or twice the full-speed margin) was heard in the last second."""
 from picar_server import config, safety
 from picar_server.controller import CmdError, Controller
-from picar_server.hal.base import DIST_NONE, DIST_OK, Sample
+from picar_server.hal.base import DIST_FAR, DIST_NONE, DIST_OK, Sample
 from picar_server.hal.real import RealBackend
 
 from conftest import FakeBackend, Rig
@@ -39,7 +39,7 @@ def driving(r):
 
 def started_rig():
     r = Rig()
-    r.run(0.2, cm=300.0)                                # fresh, nothing near
+    r.run(0.2, state=DIST_FAR)                          # fresh, nothing in range (no echo distance: D8 stays out)
     return r
 
 
@@ -92,7 +92,7 @@ def test_a_trusted_no_echo_allows_a_forward_start_and_expires():
 
 def test_a_near_echo_in_the_last_second_disables_the_trust():
     r = Rig()
-    r.run(0.2, cm=80.0)                                 # something 80 cm ahead
+    r.run(0.2, cm=r.ctl._margin(30) + 1.0)              # something just beyond the margin (D8 cannot drive on it)
     feed(r, clear=True)
     for _ in range(4):
         feed(r)
@@ -104,7 +104,7 @@ def test_a_near_echo_in_the_last_second_disables_the_trust():
 
 def test_an_echo_heard_in_an_inconclusive_sample_disables_the_trust():
     r = started_rig()
-    feed(r, echo_cm=50.0)                               # e.g. one ping heard 50 cm, then the module went busy
+    feed(r, echo_cm=r.ctl._margin(30) + 1.0)            # e.g. one ping heard an echo, then the module went busy
     feed(r, clear=True, clear_age=0.0)
     for _ in range(4):
         feed(r)
@@ -148,7 +148,10 @@ def test_a_far_echo_before_the_no_echo_keeps_the_trust():
 def test_the_near_distance_grows_with_a_large_stop_distance():
     r = started_rig()
     r.cmd("config", stop_cm=100)                        # full-speed margin over 100 cm: near is twice that
-    feed(r, echo_cm=200.0)
+    v = safety.speed_cm_s(100, r.ctl.cal)
+    cm = r.ctl._margin(30) + v * (0.2 + safety.KNOWN_SLACK_S) - 5.0   # beyond 1 m, too close for D8
+    assert safety.TRUST_NEAR_CM < cm < 2.0 * r.ctl._margin(safety.SPEED_MAX)
+    feed(r, echo_cm=cm)
     feed(r, clear=True, clear_age=0.0)
     for _ in range(4):
         feed(r)

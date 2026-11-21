@@ -5,7 +5,7 @@ import pytest
 
 from fakes_hw import FakeBus, FakeClock, FakeGPIO
 from picar_server.hal.real import RealBackend
-from picar_server.hal.sensors import BUSY
+from picar_server.hal.sensors import BUSY, FAR
 
 
 def make(cal=None):
@@ -235,6 +235,39 @@ def test_a_timing_gap_anywhere_never_makes_the_no_echo_later_than_the_ping(gap_s
         s = b.hub.read()
         if s.clear_t is not None:
             assert s.clear_t <= gpio._busy_from, (at, s.clear_t, gpio._busy_from)
+
+
+def test_a_far_answer_survives_a_timing_gap_after_12_ms():
+    # Measured on the car: good "far" answers were thrown away when the timing loop was interrupted. Once the line
+    # has been seen high past 12 ms no echo can have ended within range, so the answer is certain.
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.027)
+    clock.gap_after(900, 0.004)                          # about 17 ms into the pulse
+    assert b.hub.us.ping() == FAR
+    assert b.hub.us.ping_start is not None
+
+
+def test_an_echo_that_ends_during_a_timing_gap_is_discarded_and_kept_as_a_possible_echo():
+    b, bus, gpio, clock = make()
+    gpio.default = gpio.echo_cm(86)                      # a 5 ms echo
+    clock.gap_after(200, 0.004)                          # a stall from ~3.6 ms to ~7.6 ms: the echo ends unseen
+    assert b.hub.us.ping() is None
+    assert b.hub.us.lost_echo_cm is not None and b.hub.us.lost_echo_cm <= 86.5
+    assert b.hub.us.discards["gap"] == 1
+
+
+def test_discard_reasons_are_counted_and_logged_once_a_minute(caplog):
+    b, bus, gpio, clock = make()
+    caplog.set_level(logging.INFO, logger="picar.sensors")
+    gpio.default = None                                  # no answer
+    b.hub.read()
+    assert b.hub.us.discards["no_rise"] == 3
+    clock.advance(61.0)
+    gpio.default = (0.0003, 0.027)
+    b.hub.read()
+    msgs = [r.getMessage() for r in caplog.records if "discarded" in r.getMessage()]
+    assert msgs and "no_rise 3" in msgs[-1]
+    assert sum(b.hub.us.discards.values()) == 0          # counted afresh after each log line
 
 
 def test_a_long_cycle_begun_during_a_timing_gap_is_not_a_no_echo():
