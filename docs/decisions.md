@@ -270,5 +270,13 @@ from the start of its sample's pings, D7's near memory still from the end); and 
 report the same stop (the first to set `blocked` reports it). Testing every stall position also found that a stall
 between the trigger and the first read could hide a whole echo; stalls are now measured from the trigger.
 
+**Seventh round** found two more stall paths (a stall before the first read hid the rise; a stalled ping that ended
+in a long cycle dropped its possible echo). Instead of patching paths one by one, the ping now follows one rule: a
+stall anywhere from the trigger to the decision means the line was not watched, so the ping yields no distance and
+no "nothing there" and records a possible echo at its safe lower bound (0 when the rise itself was not watched).
+The only exception is `far` when the rise and the first 12 ms were watched without a stall. A property test checks
+it for every stall position, three stall lengths and three pulse patterns (an echo hidden before a second high pulse
+or a long cycle): the hidden echo always surfaces as an echo no farther than it was, and never as "nothing there".
+
 **Residual.** As D7: something that moves toward the car while it drives on an echo-based bound is seen only at the
 next reading.

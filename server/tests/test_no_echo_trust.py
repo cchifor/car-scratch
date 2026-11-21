@@ -188,14 +188,14 @@ class Car:
     """RealBackend's sensor hub (fake GPIO / bus) delivering samples to a Controller, at the sensor thread's cadence.
     The I2C reads take `i2c_s` per sample (measured on the car: the busy cycles start 409-413 ms apart)."""
 
-    def __init__(self, i2c_s=0.008):
+    def __init__(self, i2c_s=0.008, cal=None):
         self.hw = FakeClock()
         self.bus, self.gpio = FakeBus(), FakeGPIO(self.hw)
         self.bus.line_bytes = None
         self.b = RealBackend({}, bus=self.bus, gpio=self.gpio, clock=self.hw)
         self.i2c_s = i2c_s
         self.backend = FakeBackend()
-        self.ctl = Controller(self.backend, config.merge(None), shared=True, clock=lambda: self.hw.now,
+        self.ctl = Controller(self.backend, config.merge(cal), shared=True, clock=lambda: self.hw.now,
                               start_on_hold=False, on_event=lambda k, f: None, on_done=lambda o, i, r: None)
         self.ctl.start(background=False)
         self.ctl.attached = True
@@ -209,9 +209,9 @@ class Car:
         self.ctl.tick()
         self.hw.advance(max(0.0, 0.04 - (self.hw.now - t0)))
 
-    def drive(self):
+    def drive(self, speed=50):
         self.b.set_motors(1000, 1000)                   # the hub pings 3 times while moving forward
-        return self.ctl.command("drive", {"dir": "forward", "speed": 50}, owner="me", cmd_id=1)
+        return self.ctl.command("drive", {"dir": "forward", "speed": speed}, owner="me", cmd_id=1)
 
     def driving(self):
         return self.backend.duty != (0, 0)
@@ -264,6 +264,29 @@ def test_integrated_a_stall_anywhere_never_stretches_the_window():
             car.step()
             assert car.hw.now - rise < 5.0
         assert car.hw.now - rise <= safety.NO_ECHO_TRUST_S + 0.05, (at, car.hw.now - rise)
+
+
+def test_integrated_a_hidden_echo_before_a_long_cycle_stops_the_car():
+    # Seventh review: an earlier "nothing there" stayed trusted after a stalled ping that hid a 34 cm echo and then
+    # went busy; at the car's calibration that echo is inside the full-speed margin.
+    for at in range(1, 140, 3):                          # every stall position across the hidden echo's sample
+        car = Car(cal={"speed_table": [[0, 0], [25, 0], [55, 10.0], [70, 14.7], [85, 20.0], [100, 24.4]]})
+        car.gpio.default = (0.0003, 0.027)
+        for _ in range(5):
+            car.step()
+        car.drive(100)                                   # full speed: the 34 cm echo is inside the margin
+        assert car.ctl._margin(car.ctl._eff) > 34.5
+        car.gpio.queue(car.gpio.long_cycle())            # a clean "nothing there" first
+        while not car.gpio._busy():
+            car.step()
+        while car.gpio._busy():
+            car.step()
+        car.gpio.default = car.gpio.multi((0.0003, 0.0020), (0.0040, 0.4015))   # the hidden echo, every ping
+        car.hw.gap_after(at, 0.0035)
+        t_hidden = car.hw.now
+        while car.driving() and car.hw.now - t_hidden < 2.0:
+            car.step()
+        assert not car.driving() and car.hw.now - t_hidden <= 0.3, (at, car.hw.now - t_hidden)
 
 
 def test_integrated_discarded_near_echo_blocks_the_trust():

@@ -259,6 +259,29 @@ def test_a_line_that_dips_and_rises_again_inside_a_gap_is_never_far():
     assert s.dist_state != "far" or s.clear_t is None
 
 
+HIDDEN_CM = 0.0020 * 34300 / 2                          # a 2 ms echo: ~34.3 cm
+PATTERNS = {
+    "echo only": [(0.0003, 0.0020)],
+    "echo, then high to 27 ms": [(0.0003, 0.0020), (0.0040, 0.0233)],
+    "echo, then a long cycle": [(0.0003, 0.0020), (0.0040, 0.4015)],
+}
+
+
+@pytest.mark.parametrize("pattern", sorted(PATTERNS))
+@pytest.mark.parametrize("gap_s", [0.0035, 0.0045, 0.020])
+def test_a_hidden_echo_always_surfaces_as_an_echo_no_farther_than_it_was(pattern, gap_s):
+    # Seventh review: stalls before the first read, or ending in a long cycle, hid a 34 cm echo. Property over
+    # every stall position: the echo is measured, or kept as an echo no farther than it was; never "nothing there".
+    for at in range(1, 160):
+        b, bus, gpio, clock = make()
+        gpio.queue(gpio.multi(*PATTERNS[pattern]), (0.0003, 0.027), (0.0003, 0.027))
+        clock.gap_after(at, gap_s)
+        s = b.hub.read()
+        heard = [c for c in (s.echo_cm, s.dist_cm if s.dist_state == "ok" else None) if c is not None]
+        assert heard and min(heard) <= HIDDEN_CM + 0.5, (pattern, gap_s, at, s)
+        assert s.clear_t is None, (pattern, gap_s, at, s)
+
+
 def test_echo_time_is_the_start_of_the_samples_pings():
     b, bus, gpio, clock = make()
     gpio.queue(gpio.echo_cm(50), gpio.echo_cm(50), gpio.echo_cm(50))

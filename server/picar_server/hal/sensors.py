@@ -89,54 +89,63 @@ class Ultrasonic:
         c.sleep(0.00001)
         g.output(p, 0)
         g.setup(p, g.IN)
+        # One rule for every stall (a gap over MAX_GAP_S between two timestamps, from the trigger on): a stall means
+        # the line was not watched, so an echo may have come and gone unseen (and the line risen again). A stalled
+        # ping never yields a distance or "nothing there"; it records a possible echo at its safe lower bound. The
+        # one exception: "far" is certain when the rise and the first 12 ms were watched without a stall.
         t0 = c.monotonic()
-        prev = self.ping_start                 # stalls are measured from the trigger: a whole echo can hide before t0
-        # A late-detected rising edge only shortens the echo (reads closer: the safe side), so gaps while
-        # waiting for it are tolerated. A late-detected falling edge lengthens it (reads farther: unsafe),
-        # so any gap while the echo is high discards the ping, and the end time is taken inside the loop.
-        unwatched = False
-        while g.input(p) == 0:
+        stalled = t0 - self.ping_start > MAX_GAP_S
+        prev = t0
+        while True:                            # wait for the rise
+            high = g.input(p) == 1
             now = c.monotonic()
-            unwatched = unwatched or now - prev > MAX_GAP_S
+            if now - prev > MAX_GAP_S:
+                stalled = True
             prev = now
+            if high:
+                break
             if now - t0 > ECHO_START_TIMEOUT_S:
-                if unwatched:
-                    self.lost_echo_cm = 0.0    # not watching for a while: a whole echo may have come and gone
-                self.discards["unwatched" if unwatched else "no_rise"] += 1
+                if stalled:
+                    self.lost_echo_cm = 0.0    # not watched for a while: a whole echo may have come and gone
+                self.discards["unwatched" if stalled else "no_rise"] += 1
                 return None
-        start = prev = c.monotonic()
-        last_high: Optional[float] = None      # a time at which the line is known to have been high (lower bound)
-        clean_high: Optional[float] = None     # last_high as it was before the first stall: continuity ends there
-        gap = False
+        rise_clean = not stalled               # the rise seen is the ping's first one
+        start = now                            # just after the read that saw the line high
+        clean_high: Optional[float] = None     # latest time the line is known high with no stall since the trigger
         while True:
             high = g.input(p) == 1
             now = c.monotonic()
-            if not gap and now - prev > MAX_GAP_S:
-                gap, clean_high = True, last_high
+            if now - prev > MAX_GAP_S:
+                stalled = True
             seen_after = prev                  # this read happened after `prev` was taken (before `now`)
             prev = now
             if not high:
                 break
-            last_high = seen_after
+            if not stalled:
+                clean_high = seen_after
             if now - start > ECHO_STUCK_S:
                 self._busy_since = start       # the pin stays an input; the next ping checks the line first
-                self.busy_started = not gap    # 40 ms without an echo, timed cleanly: a "nothing there" reading
+                if stalled:
+                    self._lost_echo(rise_clean, clean_high, start)
+                else:
+                    self.busy_started = True   # 40 ms without an echo, watched throughout: "nothing there"
                 return BUSY
         dur = now - start
-        if gap:
-            # The timing is untrustworthy. Only highs seen before the first stall prove the line stayed high (the
-            # echo may have ended inside the stall and the line risen again). The echo ended after clean_high (and
-            # began no later than `start`), so it was at least this close: keep that as an echo (it vetoes the D7
-            # trust) even though the ping is dropped, unless the line was already seen high past 12 ms.
-            lo = 0.0 if clean_high is None else max(0.0, clean_high - start)
-            if lo > ECHO_FAR_S:
-                return FAR                     # seen high past 12 ms: no echo ended within range, the answer is certain
-            self.lost_echo_cm = lo * 34300 / 2
+        if stalled:
+            if rise_clean and clean_high is not None and clean_high - start > ECHO_FAR_S:
+                return FAR                     # watched from the rise past 12 ms: no echo ended within range
+            self._lost_echo(rise_clean, clean_high, start)
             self.discards["gap"] += 1
             return None
         if dur > ECHO_FAR_S:
             return FAR
         return dur * 34300 / 2
+
+    def _lost_echo(self, rise_clean: bool, clean_high: Optional[float], start: float) -> None:
+        """A stalled ping may have hidden an echo: at least this close (the first pulse lasted past clean_high), or
+        anywhere (0) when the rise itself was not watched."""
+        lo = max(0.0, clean_high - start) if rise_clean and clean_high is not None else 0.0
+        self.lost_echo_cm = min(lo, ECHO_FAR_S) * 34300 / 2
 
     def measure(self, n: int):
         """Median of n pings (needs 2 valid when n == 3); BUSY when the module went into its long cycle before
