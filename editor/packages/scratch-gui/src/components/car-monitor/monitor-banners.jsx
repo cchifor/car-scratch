@@ -11,6 +11,7 @@ const TEXT = {
     estop: messages.bannerEstop,
     hwfault: messages.bannerHwFault,
     paused: messages.bannerPaused,
+    batteryLow: messages.bannerBatteryLow,
     viewOnly: messages.bannerViewOnly,
     notCalibrated: messages.bannerNotCalibrated,
     obstacleStopOff: messages.bannerObstacleStopOff,

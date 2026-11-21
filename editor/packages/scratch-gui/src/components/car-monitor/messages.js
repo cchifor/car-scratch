@@ -171,6 +171,62 @@ const messages = defineMessages({
         defaultMessage: 'Reload page',
         description: 'Button that reloads the page'
     },
+    powerLow: {
+        id: 'picar.power.low',
+        defaultMessage: 'Battery low',
+        description: 'Power chip: the supply voltage is too low right now'
+    },
+    powerDipped: {
+        id: 'picar.power.dipped',
+        defaultMessage: 'Power dipped',
+        description: 'Power chip: the supply voltage was too low earlier'
+    },
+    powerOk: {
+        id: 'picar.power.ok',
+        defaultMessage: 'Power OK',
+        description: 'Power chip: no power problem'
+    },
+    powerSim: {
+        id: 'picar.power.sim',
+        defaultMessage: 'Simulator',
+        description: 'Power chip: the simulator has no real power'
+    },
+    powerOn: {
+        id: 'picar.power.on',
+        defaultMessage: 'On for {min} min',
+        description: 'Power details: minutes since the car was switched on'
+    },
+    powerMotors: {
+        id: 'picar.power.motors',
+        defaultMessage: 'motors ran {min} min',
+        description: 'Power details: minutes the rear motors have run'
+    },
+    powerCpu: {
+        id: 'picar.power.cpu',
+        defaultMessage: 'CPU {temp} \u00b0C',
+        description: 'Power details: CPU temperature'
+    },
+    powerLoad: {
+        id: 'picar.power.load',
+        defaultMessage: 'load {pct} %',
+        description: 'Power details: CPU load'
+    },
+    powerHelp: {
+        id: 'picar.power.help',
+        defaultMessage: 'This car can\'t measure the battery level. The warning comes from the Raspberry Pi\'s ' +
+            'supply-voltage alarm: charge or replace the batteries when it shows.',
+        description: 'Power details: how the battery warning works'
+    },
+    powerAria: {
+        id: 'picar.power.aria',
+        defaultMessage: 'Power status',
+        description: 'Accessibility label of the power chip'
+    },
+    bannerBatteryLow: {
+        id: 'picar.banner.batteryLow',
+        defaultMessage: 'BATTERY LOW \u2014 charge the batteries (motors may be weak, the car may restart)',
+        description: 'Banner while the supply voltage is too low'
+    },
     tabSprites: {
         id: 'picar.tabs.sprites',
         defaultMessage: 'Sprites',

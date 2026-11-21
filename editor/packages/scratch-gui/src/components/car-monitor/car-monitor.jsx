@@ -8,6 +8,7 @@ import messages from './messages.js';
 import MonitorBanners, {ObstacleOverlay} from './monitor-banners.jsx';
 import MonitorCanvas from './monitor-canvas.jsx';
 import {computeBanners, sameFlags, telemetryFlags} from './monitor-flags.js';
+import PowerChip, {PowerDetails} from './power-chip.jsx';
 import StatusChip from './status-chip.jsx';
 import styles from './car-monitor.css';
 
@@ -78,6 +79,7 @@ const CarMonitor = ({link}) => {
     const [obstacleFlash, setObstacleFlash] = useState(false);
     const [lineFault, setLineFault] = useState(false);
     const [worldEvent, setWorldEvent] = useState(null);
+    const [powerOpen, setPowerOpen] = useState(false);
     const [controllerPresent, setControllerPresent] = useState(null);
     const flashTimer = useRef(null);
 
@@ -145,6 +147,8 @@ const CarMonitor = ({link}) => {
         }
     }, [link, intl, controllerPresent]);
 
+    const togglePower = useCallback(() => setPowerOpen(open => !open), []);
+
     const onWorldChange = useCallback(event => {
         link.send('world', {world: event.target.value});
     }, [link]);
@@ -184,8 +188,16 @@ const CarMonitor = ({link}) => {
                         ))}
                     </select>
                 ) : null}
-                <StatusChip state={state} />
+                <div className={styles.headerRight}>
+                    <PowerChip
+                        flags={flags}
+                        open={powerOpen}
+                        onToggle={togglePower}
+                    />
+                    <StatusChip state={state} />
+                </div>
             </div>
+            {powerOpen && flags && flags.powerSource ? <PowerDetails flags={flags} /> : null}
             <MonitorBanners
                 banners={banners}
                 onAction={onAction}

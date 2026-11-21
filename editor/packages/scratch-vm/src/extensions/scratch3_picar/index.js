@@ -138,6 +138,9 @@ class Scratch3PiCarBlocks {
         case 'obstacle_stop':
             if (this.armed && this._open()) this._startEventHats('obstacle');
             break;
+        case 'power_low':
+            if (this.armed && this._open()) this._startEventHats('battery_low');
+            break;
         default:
         }
     }
@@ -461,6 +464,24 @@ class Scratch3PiCarBlocks {
                     })
                 },
                 {
+                    opcode: 'batteryLow',
+                    blockType: BlockType.BOOLEAN,
+                    text: formatMessage({
+                        id: 'picar.batteryLow',
+                        default: 'battery low?',
+                        description: 'is the car supply voltage too low right now'
+                    })
+                },
+                {
+                    opcode: 'onTimeMinutes',
+                    blockType: BlockType.REPORTER,
+                    text: formatMessage({
+                        id: 'picar.onTimeMinutes',
+                        default: 'car on time (minutes)',
+                        description: 'minutes since the car was switched on'
+                    })
+                },
+                {
                     opcode: 'carX',
                     blockType: BlockType.REPORTER,
                     text: formatMessage({
@@ -618,6 +639,14 @@ class Scratch3PiCarBlocks {
                                 description: 'car event'
                             }),
                             value: 'disconnected'
+                        },
+                        {
+                            text: formatMessage({
+                                id: 'picar.event.batteryLow',
+                                default: 'battery gets low',
+                                description: 'car event'
+                            }),
+                            value: 'battery_low'
                         }
                     ]
                 }
@@ -747,6 +776,17 @@ class Scratch3PiCarBlocks {
 
     carMode () {
         return this._open() ? this.link.getState().mode : 'offline';
+    }
+
+    batteryLow () {
+        const t = this._tel();
+        return Boolean(t && t.power && t.power.low === true);
+    }
+
+    onTimeMinutes () {
+        const t = this._tel();
+        const s = t && t.power && t.power.on_s;
+        return typeof s === 'number' && isFinite(s) ? Math.round(s / 60) : 0;
     }
 
     _pose (key, fallback) {

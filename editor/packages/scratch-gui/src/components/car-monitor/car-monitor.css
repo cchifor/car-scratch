@@ -111,6 +111,72 @@
     background: #1E88E5;
 }
 
+/* Power chip (tap target >= 44px) and its details panel. */
+.header-right {
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.header-right .chip {
+    margin-left: 0;
+}
+
+.power-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 0.5rem;
+    border: 0;
+    background: transparent;
+    color: #263238;
+    font: inherit;
+    font-size: 0.8125rem;
+    font-weight: bold;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.power-icon {
+    width: 1.5rem;
+    height: 1.5rem;
+    color: #78909C;
+}
+
+.power-ok .power-icon {
+    color: #2E7D32;
+}
+
+.power-warn .power-icon {
+    color: #F9A825;
+}
+
+.power-bad {
+    color: #D32F2F;
+}
+
+.power-bad .power-icon {
+    color: #D32F2F;
+}
+
+.power-details {
+    padding: 0.5rem 0.75rem;
+    background: #FFFFFF;
+    border-bottom: 1px solid hsla(0, 0%, 85%, 1);
+    font-size: 0.875rem;
+    color: #263238;
+}
+
+.power-details-help {
+    margin: 0.25rem 0 0;
+    font-size: 0.8125rem;
+    color: #546E7A;
+}
+
 .estop {
     min-width: 48px;
     min-height: 48px;
