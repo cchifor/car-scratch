@@ -152,6 +152,10 @@ class FakeGPIO:
     def echo_cm(self, cm: float, delay: float = 0.0005):
         return (delay, echo_for_cm(cm))
 
+    def multi(self, *pulses):
+        """Several high pulses after one trigger, each (delay, width) from the trigger."""
+        return ("multi", list(pulses))
+
     def long_cycle(self, width: float = 0.4015, delay: float = 0.0003):
         """The module's long no-echo cycle, measured on the car: from `delay` after the trigger it holds the line
         high for `width` (401.5 ms) and ignores every trigger meanwhile."""
@@ -195,8 +199,10 @@ class FakeGPIO:
             return 1 if self._driving_high() else 0
         if pin != self.us_pin or self._active is None:
             return 0
-        delay, width = self._active
         t = self.clock.now - self._t_in
+        if self._active[0] == "multi":
+            return 1 if any(d <= t < d + w for d, w in self._active[1]) else 0
+        delay, width = self._active
         return 1 if delay <= t < delay + width else 0
 
     def writes_to(self, pin):

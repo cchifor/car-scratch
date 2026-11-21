@@ -9,12 +9,13 @@ from picar_server.hal.base import DIST_FAULT, DIST_NONE, DIST_OK, Sample
 from conftest import Rig
 
 
-def feed(r, state=DIST_NONE, cm=None, echo_cm=None, step=0.04):
+def feed(r, state=DIST_NONE, cm=None, echo_cm=None, step=0.04, echo_age=None):
     r.clock.advance(step)
     r.ctl.touch()
     t = r.clock()
     r.ctl._on_sample(Sample(t, cm, state, None, None,
-                            echo_cm=echo_cm if echo_cm is not None else (cm if state == DIST_OK else None)))
+                            echo_cm=echo_cm if echo_cm is not None else (cm if state == DIST_OK else None),
+                            echo_t=None if echo_age is None else t - echo_age))
     r.ctl.tick()
     return t
 
@@ -102,6 +103,39 @@ def test_the_closest_recent_echo_counts():
     feed(r, state=DIST_OK, cm=2000.0)                                   # newer and far (another object)
     for _ in range(4):
         feed(r)                                                         # the far reading is stale now
+    assert not driving(r)
+
+
+def test_the_bound_counts_from_the_start_of_the_samples_pings():
+    # Sixth review: an echo from the first of a sample's pings is older than the sample's timestamp.
+    r = started_rig()
+    r.cmd("drive", dir="forward", speed=50)
+    eff = r.ctl._eff
+    cm = r.ctl._margin(eff) + v_max(r) * (0.2 + safety.KNOWN_SLACK_S)
+    t = feed(r, state=DIST_OK, cm=cm, echo_age=0.08)                    # its pings began 80 ms earlier
+    for _ in range(4):
+        feed(r)                                                         # 0.16 s after the sample, 0.24 s after the echo
+    assert not driving(r), r.clock() - t
+
+
+def test_one_stop_and_one_event_when_the_tick_and_a_sample_expire_together():
+    # Sixth review: the tick read "forward", a sample stopped the car for staleness, then the tick stopped it again.
+    r = started_rig()
+    r.cmd("drive", dir="forward", speed=50)
+    feed(r, state=DIST_OK, cm=r.ctl._margin(r.ctl._eff) + 1.0)
+    r.clock.advance(0.2)
+    stale = Sample(r.clock(), None, DIST_NONE, None, None)
+    orig = r.ctl._account_reverse
+
+    def interleave():
+        orig()
+        r.ctl._on_sample(stale)                                         # the sensor thread, mid-tick
+
+    r.ctl._account_reverse = interleave
+    r.ctl.touch()
+    r.ctl.tick()
+    faults = [e for e in r.events if e[0] == "sensor_fault"]
+    assert faults == [("sensor_fault", {"sensor": "ultrasonic", "reason": "no_reading"})], faults
     assert not driving(r)
 
 

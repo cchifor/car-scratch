@@ -216,7 +216,7 @@ def test_a_discarded_near_echo_is_still_an_echo():
 def test_a_timing_gap_anywhere_never_hides_a_near_echo(gap_s):
     # Fourth review: a stall between the pin read and its timestamp hid a 50 cm echo or made it read ~80 cm.
     # Every stall position through the 50 cm ping: the echo is measured, or kept as an echo no farther than it was.
-    for at in range(1, 200, 2):
+    for at in range(1, 200):                             # every position, odd and even
         b, bus, gpio, clock = make()
         gpio.queue(gpio.echo_cm(50), (0.0003, 0.027), gpio.long_cycle())
         clock.gap_after(at, gap_s)
@@ -228,7 +228,7 @@ def test_a_timing_gap_anywhere_never_hides_a_near_echo(gap_s):
 @pytest.mark.parametrize("gap_s", [0.004, 0.2])
 def test_a_timing_gap_anywhere_never_makes_the_no_echo_later_than_the_ping(gap_s):
     # Fourth review: a stall at the rising edge made clear_t 200 ms late, stretching the D7 window.
-    for at in range(1, 120, 2):
+    for at in range(1, 120):
         b, bus, gpio, clock = make()
         gpio.queue(gpio.long_cycle(width=5.0))
         clock.gap_after(at, gap_s)
@@ -245,6 +245,25 @@ def test_a_far_answer_survives_a_timing_gap_after_12_ms():
     clock.gap_after(900, 0.004)                          # about 17 ms into the pulse
     assert b.hub.us.ping() == FAR
     assert b.hub.us.ping_start is not None
+
+
+def test_a_line_that_dips_and_rises_again_inside_a_gap_is_never_far():
+    # Sixth review: a 2 ms echo (~34 cm) ended during a stall and the line rose again before polling resumed;
+    # the later high past 12 ms made it "far". Only highs seen before the first stall count.
+    b, bus, gpio, clock = make()
+    gpio.default = gpio.multi((0.0003, 0.0020), (0.0040, 0.0233))
+    clock.gap_after(65, 0.0035)                          # a stall from ~1 ms to ~4.5 ms into the echo
+    assert b.hub.us.ping() is None
+    assert b.hub.us.lost_echo_cm is not None and b.hub.us.lost_echo_cm <= 34.5
+    s = b.hub.read()
+    assert s.dist_state != "far" or s.clear_t is None
+
+
+def test_echo_time_is_the_start_of_the_samples_pings():
+    b, bus, gpio, clock = make()
+    gpio.queue(gpio.echo_cm(50), gpio.echo_cm(50), gpio.echo_cm(50))
+    s = b.hub.read()
+    assert s.echo_t is not None and s.t - s.echo_t >= 3 * 0.0029
 
 
 def test_an_echo_that_ends_during_a_timing_gap_is_discarded_and_kept_as_a_possible_echo():

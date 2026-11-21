@@ -91,7 +91,7 @@ class Controller:
         self._sample_at = now
         self._last_good_t: Optional[float] = None   # last ok/far sample; None until the first one
         self._last_clear_t: Optional[float] = None  # last "nothing there" reading (Sample.clear_t, decision D7)
-        self._echoes: deque = deque()               # (time, cm) of echoes heard in the last NEAR_ECHO_MEMORY_S (D7)
+        self._echoes: deque = deque()               # (earliest, latest, cm) per sample with an echo, last second
         self._last_echo_t: Optional[float] = None   # last echo of any distance (a "nothing there" must be newer)
         self._clear_since: Optional[float] = None
         self._last_ok: Optional[tuple[float, float]] = None   # (cm, time) of the latest ok sample, cleared by a far one
@@ -329,13 +329,15 @@ class Controller:
             return False                   # an echo heard after it: that is the newer information
         # judged against the current settings: raising stop_cm makes recent echoes near
         near_cm = max(safety.TRUST_NEAR_CM, 2.0 * self._margin(safety.SPEED_MAX))
-        return not any(now - t <= safety.NEAR_ECHO_MEMORY_S and cm < near_cm for t, cm in self._echoes)
+        # each echo as recent as its sample (the conservative end for remembering it)
+        return not any(now - t <= safety.NEAR_ECHO_MEMORY_S and cm < near_cm for _, t, cm in self._echoes)
 
     def _known_clear_locked(self, now: float, margin: float) -> bool:
         """Decision D8: every echo heard in the last NO_ECHO_TRUST_S, minus the farthest the car could have travelled
         since (at the speed limit's ground speed, plus KNOWN_SLACK_S to the next check), is still at or beyond the
         stopping margin. Caller holds self._lock."""
-        recent = [(t, cm) for t, cm in self._echoes if now - t <= safety.NO_ECHO_TRUST_S]
+        # each echo as old as the start of its sample's pings (the conservative end)
+        recent = [(t, cm) for t, _, cm in self._echoes if now - t <= safety.NO_ECHO_TRUST_S]
         if not recent:
             return False
         v = safety.speed_cm_s(min(safety.SPEED_MAX, self.cfg["speed_limit"]), self.cal)
@@ -669,8 +671,9 @@ class Controller:
             echoes = [c for c in (s.echo_cm, s.dist_cm if s.dist_state == DIST_OK else None) if c is not None]
             if echoes:
                 self._last_echo_t = min(now, s.t)
-                self._echoes.append((self._last_echo_t, min(echoes)))
-            while self._echoes and now - self._echoes[0][0] > safety.NEAR_ECHO_MEMORY_S:
+                early = min(now, s.echo_t) if s.echo_t is not None else self._last_echo_t
+                self._echoes.append((early, self._last_echo_t, min(echoes)))
+            while self._echoes and now - self._echoes[0][1] > safety.NEAR_ECHO_MEMORY_S:
                 self._echoes.popleft()
             if s.clear_t is not None and s.dist_state in (DIST_FAR, DIST_NONE):
                 self._last_clear_t = min(now, s.clear_t)
@@ -700,10 +703,11 @@ class Controller:
         if reason:
             self.backend.inhibit_forward()
             with self._lock:
+                first = not self.blocked                # the loop tick may have stopped it for the same reason
                 self.blocked, self._clear_since = True, None
             if reason == "obstacle":
                 events.append(("obstacle_stop", {"cm": None if s.dist_cm is None else round(s.dist_cm, 1)}))
-            elif not any(k == "sensor_fault" and f.get("sensor") == "ultrasonic" for k, f in events):
+            elif first and not any(k == "sensor_fault" and f.get("sensor") == "ultrasonic" for k, f in events):
                 events.append(("sensor_fault", {"sensor": "ultrasonic",
                                                 "reason": "no_answer" if s.dist_state == DIST_FAULT else "no_reading"}))
             self._defer("obstacle", events, move)
@@ -802,8 +806,9 @@ class Controller:
             if why:
                 self.backend.inhibit_forward()
                 with self._lock:
+                    first = not self.blocked            # a sample may have stopped it for the same reason meanwhile
                     self.blocked, self._clear_since = True, None
-                self._halt("obstacle", [("sensor_fault", {"sensor": "ultrasonic", "reason": why})])
+                self._halt("obstacle", [("sensor_fault", {"sensor": "ultrasonic", "reason": why})] if first else [])
         self._dead_reckon(dt)
         self._drain()
 

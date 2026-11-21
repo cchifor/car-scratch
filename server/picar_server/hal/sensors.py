@@ -61,6 +61,7 @@ class Ultrasonic:
         self.discards: collections.Counter = collections.Counter()   # why pings gave no reading (logged per minute)
         self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
         self.echo_cm: Optional[float] = None       # measure(): closest echo heard
+        self.batch_t: Optional[float] = None       # measure(): when its pings began
 
     def ping(self):
         """cm; FAR for an echo ending between 12 and 40 ms; BUSY while the module is in its long no-echo cycle;
@@ -88,7 +89,8 @@ class Ultrasonic:
         c.sleep(0.00001)
         g.output(p, 0)
         g.setup(p, g.IN)
-        t0 = prev = c.monotonic()
+        t0 = c.monotonic()
+        prev = self.ping_start                 # stalls are measured from the trigger: a whole echo can hide before t0
         # A late-detected rising edge only shortens the echo (reads closer: the safe side), so gaps while
         # waiting for it are tolerated. A late-detected falling edge lengthens it (reads farther: unsafe),
         # so any gap while the echo is high discards the ping, and the end time is taken inside the loop.
@@ -104,11 +106,13 @@ class Ultrasonic:
                 return None
         start = prev = c.monotonic()
         last_high: Optional[float] = None      # a time at which the line is known to have been high (lower bound)
+        clean_high: Optional[float] = None     # last_high as it was before the first stall: continuity ends there
         gap = False
         while True:
             high = g.input(p) == 1
             now = c.monotonic()
-            gap = gap or now - prev > MAX_GAP_S
+            if not gap and now - prev > MAX_GAP_S:
+                gap, clean_high = True, last_high
             seen_after = prev                  # this read happened after `prev` was taken (before `now`)
             prev = now
             if not high:
@@ -120,10 +124,11 @@ class Ultrasonic:
                 return BUSY
         dur = now - start
         if gap:
-            # The timing is untrustworthy, but the echo may have ended within range: it ended after last_high (and
-            # the echo began no later than `start`), so it was at least this close. Keep that as an echo (it vetoes
-            # the D7 trust) even though the ping is dropped.
-            lo = 0.0 if last_high is None else max(0.0, last_high - start)
+            # The timing is untrustworthy. Only highs seen before the first stall prove the line stayed high (the
+            # echo may have ended inside the stall and the line risen again). The echo ended after clean_high (and
+            # began no later than `start`), so it was at least this close: keep that as an echo (it vetoes the D7
+            # trust) even though the ping is dropped, unless the line was already seen high past 12 ms.
+            lo = 0.0 if clean_high is None else max(0.0, clean_high - start)
             if lo > ECHO_FAR_S:
                 return FAR                     # seen high past 12 ms: no echo ended within range, the answer is certain
             self.lost_echo_cm = lo * 34300 / 2
@@ -140,6 +145,7 @@ class Ultrasonic:
         need = 2 if n >= 3 else 1
         vals: list[float] = []
         self.clear_t = self.echo_cm = None
+        self.batch_t = self.clock.monotonic()          # no echo heard in this measurement is older than this
         for _ in range(n):
             v = self.ping()
             if self.lost_echo_cm is not None:
@@ -173,6 +179,7 @@ class SensorHub:
         self._discard_log_t = clock.monotonic()
         self.clear_t: Optional[float] = None       # this sample's "nothing there" time (D7), see Sample.clear_t
         self.echo_cm: Optional[float] = None       # this sample's closest echo, see Sample.echo_cm
+        self.echo_t: Optional[float] = None        # when this sample's pings began, see Sample.echo_t
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -205,6 +212,7 @@ class SensorHub:
         v = self.us.measure(3 if (forward or near) else 1)
         self._log_discards()
         self.echo_cm = self.us.echo_cm
+        self.echo_t = self.us.batch_t
         self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
         if v is BUSY:
             # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
@@ -390,4 +398,5 @@ class SensorHub:
         cm, state = self._read_distance()
         return Sample(t=self.clock.monotonic(), dist_cm=cm, dist_state=state,
                       line_raw=self._read_line(), light_raw=self._read_light(),
-                      line_skipped=self.line_skipped, clear_t=self.clear_t, echo_cm=self.echo_cm)
+                      line_skipped=self.line_skipped, clear_t=self.clear_t, echo_cm=self.echo_cm,
+                      echo_t=self.echo_t)

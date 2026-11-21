@@ -30,6 +30,7 @@ class Sample:
     clear_t: Optional[float] = None       # a ping in this sample heard nothing in range (far, or a long cycle began) at
                                           # this time, and no ping in it heard an echo (decision D7); None otherwise
     echo_cm: Optional[float] = None       # the closest echo any ping in this sample heard (even if the sample is not ok)
+    echo_t: Optional[float] = None        # when this sample's pings began: no echo in it is older (D8 counts from it)
 
 
 OnSample = Callable[[Sample], None]

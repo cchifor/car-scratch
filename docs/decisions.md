@@ -263,5 +263,12 @@ car could have travelled since, stays above the stopping margin.
   ended within range. The recording showed 8 standstill faults made of good `far` answers thrown away this way.
 - The reasons pings give no reading (`no_rise`, `gap`, `unwatched`, `stuck`) are counted and logged once a minute.
 
+**Independent review (sixth round) before the first deploy** found three gaps, fixed with tests: a line that dipped
+(echo ended) and rose again inside a timing stall could still read `far` (only highs seen before the first stall
+count now); an echo was dated by its sample's end although its ping could be ~80 ms older (D8 now dates every echo
+from the start of its sample's pings, D7's near memory still from the end); and a loop tick and a sample could both
+report the same stop (the first to set `blocked` reports it). Testing every stall position also found that a stall
+between the trigger and the first read could hide a whole echo; stalls are now measured from the trigger.
+
 **Residual.** As D7: something that moves toward the car while it drives on an echo-based bound is seen only at the
 next reading.
