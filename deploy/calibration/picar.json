@@ -1,0 +1,73 @@
+{
+  "calibrated": false,
+  "line_enabled": true,
+  "steer_trim_deg": -3.3,
+  "duty_floor_pct": 25,
+  "duty_ceiling_pct": 100,
+  "speed_table": [
+    [
+      0,
+      0
+    ],
+    [
+      25,
+      0
+    ],
+    [
+      55,
+      10.0
+    ],
+    [
+      70,
+      14.7
+    ],
+    [
+      85,
+      20.0
+    ],
+    [
+      100,
+      24.4
+    ]
+  ],
+  "coast_table": [
+    [
+      0,
+      0
+    ],
+    [
+      50,
+      3
+    ],
+    [
+      100,
+      12
+    ]
+  ],
+  "wheelbase_cm": 7.0,
+  "ultrasonic_offset_cm": 12.0,
+  "line_sensor_spacing_cm": 2.0,
+  "line_black_high": false,
+  "line_threshold": [
+    70,
+    68,
+    62,
+    58,
+    66
+  ],
+  "light_channels": [
+    3,
+    2,
+    1
+  ],
+  "light_dark": [
+    252,
+    250,
+    252
+  ],
+  "light_bright": [
+    13,
+    19,
+    19
+  ]
+}

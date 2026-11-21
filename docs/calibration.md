@@ -178,6 +178,21 @@ light, and the arrow should point to it.
   `line_enabled` is not part of `calibrate`).
 - Repeat the Stage 2 floor test (in `docs/on-car-checklist.md`) to confirm the changes.
 
+## The saved copy in the repo
+
+[`deploy/calibration/picar.json`](../deploy/calibration/picar.json) is this car's `calibration.json`, copied from
+the car after the 2026-11-21 calibration (speed table, turning, trim, light and line sensors). The car's own file
+stays the one in use: a deploy never overwrites it, because `calibrate ... save` changes it on the car. The copy
+is there to restore the car after an SD card change, or to compare with later:
+
+```
+scp deploy/calibration/picar.json c4@picar.local:.config/car-scratch/calibration.json
+ssh c4@picar.local systemctl --user restart car-scratch
+```
+
+After a recalibration, copy the car's file back over it and commit it:
+`scp c4@picar.local:.config/car-scratch/calibration.json deploy/calibration/picar.json`.
+
 ## Measured on the car (2026-11-21, fresh batteries)
 
 Floor runs with `wsclient move` (obstacle stop on), measured with a tape from the front bumper:
