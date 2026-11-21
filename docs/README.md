@@ -14,6 +14,9 @@ every consumer.
 | measure and set steering trim, speed and coast tables | [calibration.md](calibration.md) | Calibration fields, how to measure them, the values measured on this car |
 | run the first tests on the real car | [on-car-checklist.md](on-car-checklist.md) | Staged checklist (dry run, wheels up, floor, examples, iPad, two devices) with result tables |
 | use Car Scratch on an iPad | [ipad.md](ipad.md) | Opening it, Home Screen, layout, Save/Open on the car, what happens when the iPad locks |
+| watch every sensor live or drive from a terminal | [carctl.md](carctl.md) | `carctl`: terminal dashboard, keyboard driving, one-shot commands, on the car or a workstation |
+| use the car without a router (iPad or laptop straight to the car) | [wifi.md](wifi.md) | The car's fallback WiFi hotspot: when it starts, how to join, modes, safe testing, recovery |
+| make the car's Raspberry Pi headless and boot faster | [pi-tune.md](pi-tune.md) | `pi-tune.sh` (services, boot config) and `pi-slim.sh` (removing the desktop), with measurements |
 | get children started | [kids-guide.md](kids-guide.md) | The most important blocks, safety rules and three small challenges |
 | see why something was decided | [decisions.md](decisions.md) | Decision log of the design reviews (historical record) |
 | see what was planned originally | [plan.md](plan.md) | The implementation plan of 2026-11-20 (historical record) |
