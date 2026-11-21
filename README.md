@@ -29,16 +29,17 @@ browser. See [docs/safety.md](docs/safety.md).
 | `examples/` | example project generator (`tools/pack.py`) and definitions |
 | `e2e/` | Playwright tests (Chromium + WebKit iPad profiles) |
 | `deploy/` | `deploy.sh`, `pi-setup.sh`, systemd units |
-| `docs/` | [protocol](docs/protocol.md), [contracts](docs/contracts.md), [decisions](docs/decisions.md), [safety](docs/safety.md), [iPad](docs/ipad.md), [calibration](docs/calibration.md), [on-car checklist](docs/on-car-checklist.md), [kids' guide](docs/kids-guide.md) |
+| `docs/` | [index](docs/README.md), [architecture](docs/architecture.md), [components](docs/components.md), [protocol](docs/protocol.md), [contracts](docs/contracts.md), [decisions](docs/decisions.md), [safety](docs/safety.md), [iPad](docs/ipad.md), [calibration](docs/calibration.md), [on-car checklist](docs/on-car-checklist.md), [kids' guide](docs/kids-guide.md) |
 
 ## Develop and test (Docker only)
 
 ```sh
 docker compose run --rm server-test                     # Python server tests
 docker compose run --rm editor-test                     # scratch-vm Tap + scratch-gui Jest tests for Car Scratch
-docker buildx build -f docker/editor.Dockerfile --target www --output type=local,dest=out/www .   # editor build (~5 min)
+docker buildx build -f docker/editor.Dockerfile --target www --build-arg BUILD_SHA=$(git rev-parse --short=12 HEAD) \
+    --output type=local,dest=out/www .                  # editor build (~5 min); deploy.sh refuses a bundle without the HEAD sha
 docker run --rm -v "$PWD:/repo" -w /repo python:3.13-slim python3 examples/tools/pack.py out/examples
-docker compose up -d sim-server                         # http://localhost:8080 — simulator, no car needed
+docker compose up -d sim-server                         # http://localhost:18080 (compose maps 18080:8080) — simulator, no car needed
 docker compose run --rm e2e                             # Playwright against the simulator
 ```
 

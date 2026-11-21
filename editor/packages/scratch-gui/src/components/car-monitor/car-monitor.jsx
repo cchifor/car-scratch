@@ -112,7 +112,11 @@ ViewSwitch.propTypes = {
 };
 
 /**
- * The Pi Car pane: header (mode, world, status, E-STOP), the animated canvas and the banners.
+ * The Pi Car pane. Header (one row): Car | Simulator switch, world picker (sim mode), Room | Follow switch
+ * (car mode), power chip and status chip. There is no E-STOP in the monitor (decision D2): CarEstop puts it in
+ * the menu bar, and floating over the stage in full-screen mode. Below the header: the power details (when the
+ * chip is opened), the banners, and the animated canvas with two overlays: the map toolbar at the top left
+ * (Clear map, Reset position for the controller, Mirror) and the transient OBSTACLE STOP banner.
  * @param {object} props - props
  * @param {object} props.link - the CarLink (docs/contracts.md section 5)
  * @returns {React.Element} the monitor

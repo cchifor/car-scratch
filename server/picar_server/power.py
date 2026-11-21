@@ -2,8 +2,11 @@
 
 The car has no battery-voltage sensor. What the Pi does tell us is whether its own supply is sagging
 (`rpi_volt` hwmon alarm / `vcgencmd get_throttled`), which on a battery car means "the batteries are low".
-Everything here is polled from the asyncio loop (sysfs reads are cheap, vcgencmd runs as an async subprocess)
-and never touches the sensor thread, which busy-waits on the ultrasonic echo."""
+The polling is driven by the asyncio loop: the sysfs / uptime / load reads of each periodic pass run in a worker
+thread (`asyncio.to_thread`, so a stalled read never blocks the loop; only the first pass in `start()` reads in
+the caller's thread), `vcgencmd` runs as an async subprocess with a timeout, and every state change and event
+happens back on the loop. Nothing here touches the sensor thread,
+which busy-waits on the ultrasonic echo."""
 from __future__ import annotations
 
 import asyncio

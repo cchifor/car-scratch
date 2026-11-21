@@ -51,17 +51,37 @@ class Backend(Protocol):
     def start(self, on_sample: Callable[[Sample], None]) -> None: ...
         # real/dryrun: starts the sensor thread, on_sample is called FROM THAT THREAD (~25 Hz).
         # sim: requires a running asyncio loop, calls on_sample from the loop (25 Hz) and runs physics at 50 Hz.
-    def set_motors(self, left: int, right: int) -> None: ...   # signed duty -4095..4095, sign = direction
+    def set_motors(self, left: int, right: int) -> bool: ...   # signed duty -4095..4095, sign = direction;
+                                                # False = a latch replaced the duty with zero (forward inhibit or
+                                                # full-stop latch); raises HardwareFault after a failed retry
     def set_steering(self, angle_deg: float) -> None: ...      # -45..45 from straight (neg = left); trim applied inside
     def stop_motors(self) -> bool: ...          # zero both motors; idempotent; NEVER raises; any thread;
                                                 # False = could not confirm (lock timeout / I2C error) → hw_fault
     def inhibit_forward(self) -> None: ...      # stop + latch: set_motors refuses forward duty until clear_inhibit()
     def clear_inhibit(self) -> None: ...
-    def motion(self) -> tuple[int, int]: ...    # snapshot of the last commanded (left, right) duty, thread-safe
-    def set_near_hint(self, cm: float) -> None: ...  # real: ping median-of-3 below this distance; sim/dryrun: no-op
-    def pose(self) -> tuple[float, float, float] | None: ...    # sim: true pose (x, y, scratch_dir); real: None
+    def latch_stop(self) -> bool: ...           # full-stop latch, any thread: motors zeroed, and until release_stop()
+                                                # every set_motors writes zero and returns False; True = confirmed off
+    def release_stop(self) -> None: ...         # the controller mirrors estop / hold / hw_fault into this latch
+    def motion(self) -> tuple[int, int]: ...    # snapshot of the last applied (left, right) duty, thread-safe
+    def set_near_hint(self, cm: float) -> None: ...  # real/dryrun: ping median-of-3 below this distance; sim: no-op
+    def pose(self) -> tuple[float, float, float] | None: ...    # sim: true pose (x, y, scratch_dir); real/dryrun: None
     def close(self) -> None: ...                # stop motors, stop threads
 ```
+
+Backend extras outside the protocol (`hal/real.py`, `hal/dryrun.py`, `hal/sim/backend.py`; the controller uses
+them when they exist):
+
+- `set_deadline_probe(fn)` (real and dry run, `_HardwareBase`): `fn() -> (loop_ok, controller_ok)` is polled
+  by the sensor thread on every iteration while the motors run; a False stops the motors from that thread.
+  The controller passes `Controller._deadline_probe`. Without it (the simulator) the controller checks the
+  deadlines itself, inside the obstacle guard.
+- `set_latch_callback(cb)` (real and dry run): `cb(reason)` is called from the sensor thread after a deadline
+  stop (`"loop_stalled"` or `"controller_silent"`), or with `"stop_failed"` when a deadline stop or
+  `inhibit_forward()` could not confirm the motors are off. The controller passes `Controller._deadline_latch`
+  (hold with reason `watchdog`, or `hw_fault`).
+- `set_trim(trim_deg)` (real and dry run): live steering trim for the `calibrate` command; the real backend
+  re-applies the current steering angle with the new trim.
+- The simulator adds `reset_pose()`, `set_world(world)`, `teleport(x, y, dir)` and a `bumped` flag.
 
 Threading rules (real/dry-run):
 
@@ -114,6 +134,10 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
   (on this module a lower raw value means more light; confirm on the car).
 - Line: sensor sees line when `raw < line_threshold`.
 - Legacy `~/picar/calibration.json` `{"steer_trim_deg": x}` is migrated on first start.
+- `ultrasonic_offset_cm` is reserved and **not used yet**: `safety.geometry()` sends a fixed `ultrasonic_x: 22`
+  (section 4), which the simulator and the Car Monitor use.
+- The file is read once, when the server starts; only `calibrate` changes a value (the steering trim) while it
+  runs.
 
 ## 4. Simulator worlds (`server/picar_server/hal/sim/worlds/<id>.json`)
 
@@ -141,30 +165,47 @@ Car geometry for drawing and physics is sent once in `welcome.geometry` (authori
 
 ```js
 class CarLink extends EventEmitter {           // 'events' package
-  constructor ({url, WebSocketImpl = WebSocket, clock = {now, setTimeout, clearTimeout, setInterval, clearInterval},
-                doc = globalThis.document, storage = globalThis.sessionStorage, fetchImpl = globalThis.fetch})
+  constructor ({url,                           // default: ?picar_ws= override, else same-origin /ws
+                WebSocketImpl = globalThis.WebSocket,
+                clock = {now, setTimeout, clearTimeout, setInterval, clearInterval},   // now = performance.now
+                doc = globalThis.document,     // visibilityState + visibilitychange
+                win = globalThis.window,       // pageshow, pagehide, online
+                sessionStore = sessionStorage, // alias: storage; holds picar.clientId
+                localStore = localStorage,     // picar.mode, picar.stageMirror
+                fetchImpl = globalThis.fetch,  // POST /api/estop
+                random = Math.random,          // client id and reconnect jitter
+                buildSha = null})              // editor build sha; a different welcome.server.sha -> 'reload'
   start ()                                     // connect + auto-reconnect (not after close 4400/4409)
   stop ()                                      // close, no reconnect
-  setMode (mode /* 'car'|'sim' */, world)      // persisted in localStorage 'picar.mode'
-  send (op, fields)  -> id|null                // fire-and-forget cmd through the coalescer (below)
+  setMode (mode /* 'car'|'sim' */, world, {persist} = {})   // persisted in localStorage 'picar.mode' unless persist === false
+  send (op, fields)  -> id|0|null              // fire-and-forget cmd through the coalescer (below); 0 = queued for the next flush
   move (dir, speed, ms) -> Promise<result>     // always resolves: done.result | err.code | 'disconnected' | 'timeout' (ms + 2000)
-  estop ()                                     // WebSocket estop + POST /api/estop (keepalive); queued if not open
+                                               //   | 'rate_limited' (socket back-pressured, nothing sent)
+  estop ()                                     // WebSocket estop + POST /api/estop (keepalive); queued if not open;
+                                               // emits a local 'event' {kind: 'estop', local: true} at once
   control (action, force)
-  getState () -> {connection: 'connecting'|'open'|'closed'|'reload', role, mode, carAvailable, hw, config,
-                  safety, world, worlds, server, lastError}           // immutable snapshot
+  setStageMirror (on)                          // stage mirror on/off, persisted in localStorage 'picar.stageMirror'
+  clearTrail ()                                // emits 'clearTrail' (the extension erases the stage-mirror trail)
+  getState () -> {connection: 'connecting'|'open'|'switching'|'closed'|'reload', role, mode, stageMirror,
+                  carAvailable, hw, config, safety, world, worlds, geometry, server, lastError}   // immutable snapshot
   subscribe (fn) -> unsubscribe                // fires on coarse state changes only (not every tel)
   getTelemetry () -> last tel or null (cleared on disconnect and on every mode switch)
-  // events: 'telemetry' (tel), 'event' (evt), 'world' (world), 'state' (state), 'role' (msg), 'protocol_error' (err)
+  // events: 'telemetry' (tel), 'event' (evt), 'world' (world), 'state' (state), 'role' (msg),
+  //         'protocol_error' ({reason, data}), 'clearTrail' ()
   // never emit the special EventEmitter 'error' event (it throws when unhandled)
 }
 ```
+
+`geometry` is `welcome.geometry` (section 4); `stageMirror` is the stage-mirror switch (section 6).
 
 - `client_id`: random id in **sessionStorage** `picar.clientId` (survives reload/tab restore, distinct per tab;
   in-memory fallback when storage throws). No `crypto.randomUUID` (not a secure context).
 - Heartbeat: `hb` every `hb_ms` via `setInterval`.
 - **Coalescing:** a command identical to the last one sent for the same op (`drive`, `steer`, `set_speed`,
   `config`) is dropped; otherwise per-op latest-wins, flushed at most every 50 ms (20 Hz). `stop`, `estop`,
-  `pause`, `resume`, `move`, `estop_reset` bypass the coalescer and clear pending motion ops.
+  `pause`, `resume`, `move`, `estop_reset` bypass the coalescer and clear pending motion ops (`drive`,
+  `set_speed`). Pending settings (`steer`, `config`) are sent before `move`, `resume` and `estop_reset`, after
+  `stop` and `pause`, and dropped by `estop`.
 - Reconnect: backoff 0.5, 1, 2, 4, 5 s (+ up to 250 ms jitter); immediate reconnect on `visibilitychange`
   → visible, `pageshow`, `online`. No frame for 2 s while open → force reconnect. Close codes 4400/4409 →
   state `reload`, no reconnect. `welcome.server.sha` ≠ build sha (if known) → state `reload`.
@@ -206,13 +247,18 @@ as an input whose shadow block is `picar_menu_sensor` with field `sensor`. Numbe
 | `emergencyStop` | command | emergency stop | – |
 | `isConnected` | Boolean | car connected? | – |
 | `carMode` | reporter | car mode | – |
+| `batteryLow` | Boolean | battery low? | – |
+| `onTimeMinutes` | reporter | car on time (minutes) | – |
 | `carX` / `carY` / `carDirection` | reporter | car x / car y / car direction | – |
 | `resetPosition` | command | reset car position | – |
+| `setStageMirror` | command | show the car moves on the stage [ONOFF] | ONOFF: field `onoff` = `on` |
+| `stageMirrorOn` | Boolean | stage mirror on? | – |
 | `whenCarEvent` | **hat, `isEdgeActivated: false`, `shouldRestartExistingThreads: false`**, func returns true | when car [EVENT] | EVENT: field `event` = `obstacle` |
 
 Menu values (stored value → label): `dir`: `forward`, `backward` · `steer`: `left` (−30°), `straight` (0°),
 `right` (+30°) · `sensor`: `1`..`5` (1 = leftmost) · `light`: `left`, `middle`, `right` · `onoff`: `on`, `off` ·
-`event`: `obstacle` ("stops for an obstacle"), `estop` ("is emergency stopped"), `disconnected` ("loses connection").
+`event`: `obstacle` ("stops for an obstacle"), `estop` ("is emergency stopped"), `disconnected` ("loses connection"),
+`battery_low` ("battery gets low").
 
 Semantics:
 
@@ -231,7 +277,15 @@ Semantics:
   `runtime.stopAll()`.
 - `whenCarEvent` is started with `runtime.startHats('picar_whenCarEvent', {EVENT: value})` using a **fresh
   object per call** (startHats mutates it); events map: `obstacle_stop` → `obstacle`, `estop` → `estop`,
-  link closed → `disconnected`.
+  link closed → `disconnected`, `power_low` -> `battery_low`.
+- `batteryLow` is `tel.power.low` (false when disconnected); `onTimeMinutes` is `tel.power.on_s / 60`, rounded
+  (0 when disconnected).
+- Stage mirror: while on (`setStageMirror`, or the Car Monitor's Mirror button; read it with
+  `CarLink.getState().stageMirror`), the sprite named `Car` follows `tel.pose` (`setXY` / `setDirection` when
+  it moved at least 0.5 cm or turned at least 0.5 degrees), and a trail is drawn on the extension's own pen skin
+  on the pen layer (no Pen extension needed, the user's pen drawings are untouched). No trail across a pose jump
+  of more than 50 cm; turning the mirror on and `CarLink.clearTrail()` erase it. `stageMirrorOn` reports the
+  switch.
 
 ## 7. GUI integration
 
@@ -241,7 +295,7 @@ Semantics:
   through `vm.runtime.peripheralExtensions.picar.link` (re-check on the VM `EXTENSION_ADDED` event).
   Helper hook: `scratch-gui/src/lib/picar/use-car-link.js`. The Car | Sim switch lives in the Car Monitor.
 - `scratch-gui/src/lib/vm-manager-hoc.jsx` loads the `picar` extension once when the VM initialises.
-- `?picar_debug=1` exposes `window.__picar = {link, vm}` for e2e tests.
+- `?picar_debug=1` exposes `window.__picar = {link, runtime}` (the CarLink and the VM runtime) for e2e tests.
 - The Car Monitor subscribes to `link.subscribe` (React state) and `link.on('telemetry')` (canvas,
   no React re-render per frame). The E-STOP button calls `link.estop()` on `pointerdown`.
 - The Resume button sends `resume`; the e-stop banner's Reset sends `estop_reset` (controller only).
