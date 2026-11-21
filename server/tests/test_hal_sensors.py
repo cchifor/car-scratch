@@ -173,8 +173,14 @@ def test_open_space_long_cycles_are_never_a_fault():
 def test_no_rise_still_faults_while_long_cycles_come_and_go():
     b, bus, gpio, clock = make()
     gpio.default = None                                  # the module never answers the trigger
-    states = _read_for(b, clock, 0.3)
-    assert states[-1] == "fault"
+    gpio.queue(None, None, None, None, None, None)       # sample 1 and 2: no rise (3 pings each)
+    assert [b.hub.read().dist_state for _ in range(2)] == ["none", "none"]
+    gpio.queue(gpio.long_cycle())                        # a busy sample neither counts nor resets the run
+    assert b.hub.read().dist_state == "none"
+    clock.advance(0.5)
+    assert b.hub.read().dist_state == "fault"            # the third no-rise sample
+    gpio.queue(gpio.long_cycle())
+    assert b.hub.read().dist_state == "fault"            # a busy sample keeps an established fault
 
 
 def test_none_samples_then_fault_after_three_consecutive():

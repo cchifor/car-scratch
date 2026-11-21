@@ -627,8 +627,11 @@ class Controller:
         with self._lock:
             self._sample, self._sample_at = s, now
             if s.dist_state in (DIST_OK, DIST_FAR):
-                self._last_good_t = now
-                self._last_ok = (s.dist_cm, now) if s.dist_state == DIST_OK and s.dist_cm is not None else None
+                # Freshness counts from when the distance was measured (Sample.t, taken right after the pings), not
+                # from when the sample arrived: a sample delayed by a slow line read must not look fresh.
+                measured = min(now, s.t)
+                self._last_good_t = measured
+                self._last_ok = (s.dist_cm, measured) if s.dist_state == DIST_OK and s.dist_cm is not None else None
             fault_now = s.dist_state == DIST_FAULT
             if fault_now != self._us_fault:
                 self._us_fault = fault_now

@@ -274,6 +274,44 @@ def test_moving_three_failed_samples_suppress_until_stop_then_need_ten_good_read
     assert b.hub.read().line_raw == [100] * 5                           # healthy again
 
 
+@pytest.mark.parametrize("bad", [BAD, None], ids=["slow-invalid", "slow-error"])
+def test_slow_failed_stopped_read_disqualifies_moving_reads(bad):
+    # Review finding: a module seen stalling while stopped must not be read while the motors run until it has
+    # answered 10 good reads again (D4's stalled-slave protection).
+    b, bus, clock = make({"line_enabled": True})
+    healthy(b, bus)
+    bus.line_script.append(bad)
+    bus.on_line_read = lambda: clock.advance(0.020)                     # this bus call takes 20 ms
+    assert b.hub.read().line_raw is None
+    bus.on_line_read = None
+    b.set_motors(1000, 1000)
+    n = rblk(bus)
+    assert b.hub.read().line_raw is None and rblk(bus) == n             # no bus read while moving
+    b.stop_motors()
+    healthy(b, bus)
+    b.set_motors(1000, 1000)
+    assert b.hub.read().line_raw == [100] * 5                           # requalified
+
+
+def test_quick_failure_then_slow_retry_disqualifies():
+    b, bus, clock = make({"line_enabled": True})
+    healthy(b, bus)
+    calls = []
+
+    def slow_second():
+        calls.append(1)
+        if len(calls) == 2:
+            clock.advance(0.020)
+
+    bus.line_script.extend([None, GOOD])                                # quick error, then a slow valid retry
+    bus.on_line_read = slow_second
+    assert b.hub.read().line_raw == [100] * 5
+    bus.on_line_read = None
+    b.set_motors(1000, 1000)
+    n = rblk(bus)
+    assert b.hub.read().line_raw is None and rblk(bus) == n
+
+
 def test_moving_two_invalid_frames_are_one_skipped_sample():
     b, bus, _ = make({"line_enabled": True})
     healthy(b, bus)

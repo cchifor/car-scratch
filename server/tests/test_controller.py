@@ -6,7 +6,7 @@ import pytest
 
 from picar_server import safety
 from picar_server.controller import CmdError
-from picar_server.hal.base import DIST_FAR, DIST_FAULT, DIST_NONE, DIST_OK
+from picar_server.hal.base import DIST_FAR, DIST_FAULT, DIST_NONE, DIST_OK, Sample
 
 from conftest import FakeBackend, Rig
 
@@ -153,6 +153,31 @@ def test_stale_good_sample_stops_forward(rig):
     rig.clock.advance(0.2)
     rig.sample(state=DIST_NONE)                        # last ok/far sample is older than 150 ms
     assert rig.backend.duty == (0, 0) and "sensor_fault" in rig.kinds()
+
+
+@pytest.mark.parametrize("guard", [True, False], ids=["distance-guard-on", "distance-guard-off"])
+def test_aged_distance_sample_refuses_a_forward_start(rig, guard):
+    # Review finding: freshness counts from when the distance was measured (Sample.t), not when the sample arrived;
+    # a sample delayed by a slow line read must not make a 300 ms old distance look fresh.
+    rig.cmd("config", obstacle_stop=guard)
+    rig.clock.advance(0.3)
+    rig.ctl._on_sample(Sample(rig.clock() - 0.3, 100.0, DIST_OK, None, None))
+    assert code(rig, "drive", dir="forward", speed=30) == "sensor_fault"
+
+
+@pytest.mark.parametrize("guard", [True, False], ids=["distance-guard-on", "distance-guard-off"])
+def test_aged_distance_sample_stops_forward_motion(rig, guard):
+    rig.cmd("config", obstacle_stop=guard)
+    rig.cmd("drive", dir="forward", speed=50)
+    rig.clock.advance(0.3)
+    rig.ctl._on_sample(Sample(rig.clock() - 0.3, 100.0, DIST_OK, None, None))
+    assert rig.backend.duty == (0, 0) and "sensor_fault" in rig.kinds()
+
+
+def test_fresh_sample_after_a_delay_is_accepted(rig):
+    rig.clock.advance(0.3)
+    rig.ctl._on_sample(Sample(rig.clock() - 0.01, 100.0, DIST_OK, None, None))
+    assert rig.cmd("drive", dir="forward", speed=30) == {"speed": 30}
 
 
 def test_far_samples_are_valid(rig):

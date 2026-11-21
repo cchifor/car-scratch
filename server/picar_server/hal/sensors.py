@@ -290,6 +290,8 @@ class SensorHub:
         if vals is None and failed and not self.line_ok:
             return self._line_failed(now)                  # not present (never seen, or absent): back off at once
         if vals is None:                                   # failed twice (or once and slow): skip this sample
+            if slow:
+                self._line_good = 0                        # seen stalling: no moving reads until 10 good reads again
             self._line_invalid_run += 1
             if self._line_invalid_run >= LINE_ABSENT_AFTER:
                 return self._line_failed(now)

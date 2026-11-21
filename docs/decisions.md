@@ -131,9 +131,12 @@ minute) while the car stood still facing a weak reflector about 110 cm away.
    fired every few seconds: with the server stopped, 59 to 75 % of pings were long cycles at every rest between
    pings from 2 to 100 ms, and none of 300 pings returned a real echo. A cycle that starts on the trigger and ends
    by itself is a living module that heard nothing, so that rule was removed.)
-3. Motion safety is unchanged: forward motion still needs an `ok`/`far` sample younger than 150 ms to start or to
-   continue. During a busy cycle a forward drive is therefore refused or stopped; only the false fault flag and
-   its events are gone.
+3. Motion safety is unchanged: a forward start needs an `ok`/`far` distance measured less than 150 ms ago, and
+   while driving forward the same check runs at every sensor sample (about every 40 ms); if samples stop arriving,
+   the controller loop's own check stops forward motion after 0.5 s. During a busy cycle a forward drive is
+   therefore refused or stopped; only the false fault flag and its events are gone. (Second review: freshness used
+   to count from when a sample *arrived*, so a sample delayed by a slow line read made an old distance look fresh;
+   it now counts from `Sample.t`, taken right after the pings. That flaw predates D5.)
 
 **Review follow-ups (same day).** An independent review found two problems in the same path, both fixed with
 tests: (a) the change kept the "last reading was far" memory across a busy cycle, so the next sample took one
@@ -175,7 +178,10 @@ frames switched moving reads off until the next stop, which at these rates happe
 3. A module that is not present (never seen, or absent and re-probed after its back-off) is read once per probe and
    backs off on an error, as before.
 4. Unchanged from D4: a bus call slower than 15 ms switches moving reads off at once (the stalled-slave protection),
-   moving reads take only the bus lock and need 10 good reads since the last failure.
+   and moving reads take only the bus lock. They need 10 good reads since the last failure, where a failure is now a
+   slow bus call (stopped or moving, valid frame or not) or losing the module (3 failed samples); an isolated quick
+   failed sample is not one, because it cannot stall the bus. (Second review: a slow failed read while stopped
+   kept the qualification in the first version of D6; it now resets it.)
 
 **Risk.** Bus time per sample is bounded as before: at most two quick reads (about 6 ms) per sample under the bus
 lock, and a module that keeps failing is dropped after 3 samples (about 120 ms).
