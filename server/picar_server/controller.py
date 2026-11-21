@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from . import safety
 from .hal.base import DIST_FAR, DIST_FAULT, DIST_NONE, DIST_OK, HardwareFault, Sample
+from .power import sim_power
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ class Controller:
         self._us_fault = False
         self._line_ok: Optional[bool] = None
         self._pose = [0.0, 0.0, 90.0]
+        self.motor_s = 0.0                    # seconds any rear-motor duty was non-zero (loop thread)
+        self._t0 = now                        # a sim session's power.on_s counts from its start
 
     # ---- lifecycle --------------------------------------------------------------------------
     def start(self, background: bool = True) -> None:
@@ -98,7 +101,7 @@ class Controller:
             self._loop = None
         self._loop_thread = threading.get_ident()
         now = self._clock()
-        self.last_loop_tick = self.last_controller_frame = self._tick_t = self._sample_at = now
+        self.last_loop_tick = self.last_controller_frame = self._tick_t = self._sample_at = self._t0 = now
         b = self.backend
         if b is None:
             return
@@ -692,6 +695,8 @@ class Controller:
         self._enforce_latches()
         motion_dir = self._motion_dir()
         moving = motion_dir is not None
+        if moving:
+            self.motor_s += dt                # power.motor_s: any non-zero duty counts
         if not moving and self._dir is not None:
             self._dir, self._eff = None, 0   # the backend stopped on its own (guard / deadline)
         # watchdog: silence of the attached controller latches hold whether or not the motors run
@@ -788,6 +793,8 @@ class Controller:
                        "margin_cm": round(margin, 1), "speed_limit": self.cfg["speed_limit"],
                        "blocked": self.blocked, "hw_fault": self.hw_fault},
             "move": None if mv is None else {"id": mv.id, "remaining_ms": max(0, int((mv.end_t - now) * 1000))},
+            # the shared car's power comes from the Hub's PowerMonitor; a sim session has no Pi to ask
+            **({} if self.shared else {"power": sim_power(now - self._t0, self.motor_s)}),
         }
 
     def capabilities(self) -> dict:

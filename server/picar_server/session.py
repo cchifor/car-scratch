@@ -17,6 +17,7 @@ from . import protocol, safety
 from .controller import CmdError, Controller
 from .hal.sim.backend import SimBackend
 from .hal.sim.world import DEFAULT_WORLD, WORLD_DIR, WorldError, list_worlds, load_world
+from .power import PowerMonitor
 from .protocol import ProtocolError, dumps
 
 log = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class Hub:
     def __init__(self, car: Controller, calibration: dict, *, hw: dict, server_info: dict,
                  clock: Callable[[], float] = time.monotonic, idle_s: float = protocol.IDLE_S,
                  lease_s: float = protocol.LEASE_S, tel_hz: int = protocol.TEL_HZ,
-                 world_dir=WORLD_DIR, max_sims: int = MAX_SIMS):
+                 world_dir=WORLD_DIR, max_sims: int = MAX_SIMS, power: Optional[PowerMonitor] = None):
         self.car, self.cal, self.hw, self.server_info = car, calibration, hw, server_info
         self.clock, self.idle_s, self.lease_s, self.tel_hz = clock, idle_s, lease_s, tel_hz
         self.world_dir, self.max_sims = world_dir, max_sims
@@ -48,14 +49,18 @@ class Hub:
         self._seq = 0
         self._ids = itertools.count(1)
         self._tel_task: Optional[asyncio.Task] = None
+        self.power = power if power is not None else PowerMonitor()
+        self.power.on_event = self._car_event
         car.on_event = self._car_event
         car.on_done = self._car_done
 
     # ---- lifecycle ----------------------------------------------------------------------------
     def start(self) -> None:
+        self.power.start()
         self._tel_task = asyncio.get_running_loop().create_task(self._tel_loop())
 
     async def stop(self) -> None:
+        self.power.stop()
         if self._tel_task:
             self._tel_task.cancel()
         for s in list(self.sessions.values()):
@@ -212,7 +217,7 @@ class Hub:
                 continue
             if s.mode == "car":
                 if base is None:
-                    base = self.car.snapshot()
+                    base = {**self.car.snapshot(), "power": self.power.snapshot(self.car.motor_s)}
                 snap, nview = base, viewers
             else:
                 snap, nview = s.sim.snapshot(), 0
