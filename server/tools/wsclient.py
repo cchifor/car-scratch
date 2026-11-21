@@ -215,7 +215,7 @@ async def run(a: argparse.Namespace) -> int:
             # The shared car starts on hold and every disconnect latches hold again: clear it explicitly.
             if not _reply_ok(await c.cmd("resume")):
                 return 1
-        if a.steer is not None and cmd in ("drive", "move"):
+        if cmd in ("drive", "move") and a.steer is not None:   # only drive/move have --steer
             if not _reply_ok(await c.cmd("steer", angle=a.steer)):
                 return 1
         if cmd == "drive":

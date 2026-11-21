@@ -51,6 +51,11 @@ remember to stop.
   `client_id` keeps a **30 s lease**: only the same `client_id` (e.g. an iPad tab that came back) gets
   control without `force` — and it comes back on hold (it must `resume`).
 - If a `hello` arrives with a `client_id` that already has a live socket, the new socket is a viewer.
+- **Promotion** (amendment 2026-11-21, found on the car): whenever there is no controller and no live
+  lease (the lease expired, or the controller released), the longest-waiting car-mode session that asked
+  for control (`hello{want:"control"}` or `control take`, and has not sent `control release` since) is
+  made controller (`role` message), on hold like every acquisition. Checked on every telemetry tick.
+  Without it a tab opened during a lease stayed VIEW ONLY for good, and could not reset an e-stop.
 - Hand-over: e-stop persists; config resets to defaults; every acquisition of car control (hello that
   becomes controller, `control take`, `mode` car, a returning lease holder) starts **on hold** (reason
   `control`, or `boot`); the new controller must `resume`.

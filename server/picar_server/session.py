@@ -117,6 +117,8 @@ class Hub:
         self.controller, self.lease = s, None
         s.role = "controller"
         self.car.new_controller(returning)
+        log.info("control: %s takes the car%s%s", s.tag, " (forced, %s demoted)" % old.tag if old else "",
+                 " (lease holder back)" if returning else "")
         self._notify()
         return True
 
@@ -127,10 +129,26 @@ class Hub:
         self.car.attached = False
         self.car.stop_and_hold("control", "stopped")
         s.role = "viewer"
+        log.info("control: %s released the car", s.tag)
         self._notify()
+
+    def promote_waiting(self) -> Optional["Session"]:
+        """The seat is free (no controller, no live lease): hand it to the longest-waiting car-mode session that
+        asked for control and never released it. Like every acquisition the car starts on hold, so nothing moves
+        until the new controller resumes. Without this a viewer stays VIEW ONLY after the lease expires."""
+        if self.controller is not None or self._lease_active():
+            return None
+        for s in list(self.sessions.values()):        # insertion order = hello order: longest waiting first
+            if (s.ready and s.promotable and s.mode == "car" and not s._closing and not s.ws.closed
+                    and not self.live_client(s.client_id, s)):          # never a duplicate of a live client id
+                if self.take(s):
+                    log.info("control: %s promoted (was waiting as viewer, seat free)", s.tag)
+                    return s
+        return None
 
     def detach(self, s: "Session") -> None:
         self.sessions.pop(s.id, None)
+        log.info("bye %s (mode %s, %s)", s.tag, s.mode, "controller" if self.controller is s else s.role)
         if self.controller is s:
             self.controller = None
             self.lease = Lease(s.client_id, self.clock() + self.lease_s)
@@ -140,6 +158,9 @@ class Hub:
 
     def estop(self, s: Optional["Session"], by: str) -> None:
         """Latches the shared car (any session, any mode) and the session's own sim."""
+        # E-STOP bypasses the rate limit: log the latching press, repeats only at debug level
+        log.log(logging.DEBUG if self.car.estopped else logging.WARNING, "E-STOP by %s (%s)", by,
+                s.tag if s is not None else "REST /api/estop")
         self.car.estop(by)
         if s is not None and s.sim is not None:
             s.sim.estop("controller")
@@ -153,6 +174,8 @@ class Hub:
 
     # ---- shared-car callbacks ------------------------------------------------------------------------
     def _car_event(self, kind: str, fields: dict) -> None:
+        if kind != "estop":                    # logged once per latch by Hub.estop
+            log.info("car event %s %s", kind, fields if fields else "")
         msg = {"t": "event", "kind": kind, **fields}
         for s in list(self.sessions.values()):
             if s.mode == "car" and s.ready:
@@ -170,6 +193,10 @@ class Hub:
             nxt += interval
             await asyncio.sleep(max(0.0, nxt - time.monotonic()))
             nxt = max(nxt, time.monotonic() - interval)
+            try:
+                self.promote_waiting()
+            except Exception:
+                log.exception("control promotion failed")
             try:
                 self.broadcast_tel()
             except Exception:
@@ -195,11 +222,12 @@ class Hub:
 
 
 class Session:
-    def __init__(self, hub: Hub, ws: web.WebSocketResponse):
-        self.hub, self.ws = hub, ws
+    def __init__(self, hub: Hub, ws: web.WebSocketResponse, peer: str = ""):
+        self.hub, self.ws, self.peer = hub, ws, peer or "?"
         self.id = hub.new_session_id()
         self.client_id = ""
         self.want = "view"
+        self.promotable = False        # may be handed the car when the seat frees (see Hub.promote_waiting)
         self.mode = "car"
         self.role = "viewer"
         self.world_id: Optional[str] = None
@@ -212,6 +240,11 @@ class Session:
         self._wake = asyncio.Event()
         self._writer: Optional[asyncio.Task] = None
         self._closing = False
+
+    @property
+    def tag(self) -> str:
+        """Short log label: session id, client id prefix, peer address."""
+        return f"{self.id}/{self.client_id[:6] or '-'}@{self.peer}"
 
     # ---- output ----------------------------------------------------------------------------------
     @property
@@ -306,6 +339,7 @@ class Session:
                 try:
                     m = await asyncio.wait_for(ws.receive(), max(timeout, 0.001))
                 except asyncio.TimeoutError:
+                    self._closing = True                      # never promoted while it closes
                     await ws.close(code=protocol.CLOSE_IDLE, message=b"idle")
                     break
                 if m.type == WSMsgType.TEXT:
@@ -395,6 +429,8 @@ class Session:
         if mode == "car":
             self._enter_car(dup, take=not err)   # a failed sim request never takes control of the car
         self.ready = True
+        log.info("hello %s want=%s mode=%s -> %s%s", self.tag, self.want, self.mode, self.role,
+                 " (duplicate client id)" if dup else "")
         if err:
             self.send(err)
         self._announce()
@@ -414,6 +450,8 @@ class Session:
 
     def _enter_car(self, dup: bool, take: bool = True) -> None:
         self.mode, self.role = "car", "viewer"
+        # a failed sim hello (take=False) falls back to viewing the car: it must never get it by promotion
+        self.promotable = self.want == "control" and take
         if self.want == "control" and not dup and take:
             self.hub.take(self)
 
@@ -422,8 +460,10 @@ class Session:
             self.send({"t": "role", "role": self.role, "controller_present": self.hub.controller is not None})
             return
         if action == "take":
+            self.want, self.promotable = "control", True
             self.hub.take(self, force)
         else:
+            self.want, self.promotable = "view", False   # an explicit release: never promoted until it asks
             self.hub.release(self)
         self.send({"t": "role", "role": self.role, "controller_present": self.hub.controller is not None})
 
@@ -466,8 +506,12 @@ class Session:
         """Runs one command; True when it was acked (an err reply returns False)."""
         hub = self.hub
         if self.mode == "car" and hub.controller is not self and op != "estop":
+            if op in ("estop_reset", "resume"):
+                log.info("refused %s from viewer %s (not the controller)", op, self.tag)
             self.err("not_controller", "only the controller can send this", cid)
             return False
+        if op in ("estop_reset", "resume") and self.mode == "car":
+            log.info("%s by %s", op, self.tag)
         if op == "estop":
             by = "controller" if hub.controller is self else "viewer"
             hub.estop(self, by)
@@ -503,5 +547,5 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         raise web.HTTPForbidden(text="forbidden origin or host")
     ws = web.WebSocketResponse(heartbeat=5, max_msg_size=protocol.MAX_FRAME_BYTES)
     await ws.prepare(request)
-    await Session(hub, ws).run()
+    await Session(hub, ws, peer=request.remote or "").run()
     return ws
