@@ -90,24 +90,39 @@ class PowerMonitor:
         self._seen_low = False
         self._ok_since: Optional[float] = None    # when `low` went false after a power_low
         self._pending_ok = False                  # a power_low was sent and no power_ok yet
+        self._raw: dict = {}                      # the last pass's file readings (see _read_sources)
         self._cache: dict = self._build()
         self._tasks: list[asyncio.Task] = []
 
     # ---- polling -------------------------------------------------------------------------------
     def poll(self) -> None:
-        """One 1 Hz pass over the cheap sources. Never raises."""
+        """One pass, reading and applying in the caller's thread (startup and tests). Never raises."""
         try:
-            self._poll()
+            self._apply(self._read_sources())
         except Exception:
             log.exception("power poll failed")
 
-    def _poll(self) -> None:
-        if self._alarm_path is None:
-            self._alarm_path = find_alarm(self.hwmon_glob)
-        v = _read(self._alarm_path) if self._alarm_path else None
+    def _read_sources(self) -> dict:
+        """All file I/O of a pass. The poll loop runs this in a worker thread: a stalled sysfs read must never
+        hold up the event loop (commands, telemetry, the watchdog)."""
+        path = self._alarm_path or find_alarm(self.hwmon_glob)
+        alarm = _read(path) if path else None
+        load = None
+        try:
+            n = self._cpu_count()
+            if n:
+                load = round(self._loadavg()[0] / n, 2)
+        except (OSError, AttributeError, TypeError):
+            pass
+        return {"alarm_path": path if alarm is not None else None, "alarm": alarm,
+                "temp": _read(self.thermal_path), "uptime": _read(self.uptime_path), "load": load}
+
+    def _apply(self, raw: dict) -> None:
+        """State update on the loop thread (events are emitted from here)."""
+        self._alarm_path = raw["alarm_path"]      # None: rediscover next time (the hwmon index may change)
+        v = raw["alarm"]
         self._alarm = None if v is None else v == "1"
-        if v is None:
-            self._alarm_path = None               # rediscover next time (the index may have changed)
+        self._raw = raw
         self._update_low(self._clock())
         self._cache = self._build()
 
@@ -157,23 +172,18 @@ class PowerMonitor:
     def _build(self) -> dict:
         known = self._current_low() is not None
         t = self._throttled or 0
-        temp = _read(self.thermal_path)
+        raw = self._raw
+        temp = raw.get("temp")                    # no I/O here: built from the last pass's readings
         try:
             cpu_temp = round(int(temp) / 1000.0, 1) if temp is not None else None
         except ValueError:
             cpu_temp = None
-        up = _read(self.uptime_path)
+        up = raw.get("uptime")
         try:
             on_s = int(float(up.split()[0])) if up else 0
         except (ValueError, IndexError):
             on_s = 0
-        load = None
-        try:
-            n = self._cpu_count()
-            if n:
-                load = round(self._loadavg()[0] / n, 2)
-        except (OSError, AttributeError, TypeError):
-            pass
+        load = raw.get("load")
         return {"source": "pi" if known else "none", "low": bool(self._low),
                 "low_since_boot": bool(self._seen_low or t & T_UNDERVOLT_SINCE),
                 "low_events": self.low_events, "throttled": bool(t & T_THROTTLED), "on_s": on_s,
@@ -197,9 +207,22 @@ class PowerMonitor:
         self._tasks.clear()
 
     async def _poll_loop(self) -> None:
+        reading: Optional[asyncio.Future] = None
         while True:
             await asyncio.sleep(POLL_S)
-            self.poll()
+            if reading is not None and not reading.done():
+                continue                          # the last read is still stuck in its thread: don't pile up
+            reading = asyncio.ensure_future(asyncio.to_thread(self._read_sources))
+            try:
+                raw = await asyncio.wait_for(asyncio.shield(reading), POLL_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue                          # slow or failing read: keep the last values
+            try:
+                self._apply(raw)
+            except Exception:
+                log.exception("power poll failed")
 
     async def _vcgencmd_loop(self) -> None:
         while True:

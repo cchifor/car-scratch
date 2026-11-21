@@ -1,5 +1,6 @@
 """PowerMonitor on fake files / clock / vcgencmd, motor_s accounting, and `power` in tel frames."""
 import asyncio
+import time
 
 import pytest
 
@@ -182,6 +183,31 @@ async def test_vcgencmd_loop_failures_keep_last_values(tmp_path, monkeypatch):
     m.stop()
     s = m.snapshot()
     assert s["source"] == "pi" and s["low"] is True and s["throttled"] is True
+
+
+async def test_a_stalled_sysfs_read_never_blocks_the_event_loop(tmp_path, monkeypatch):
+    # review finding: reads ran on the loop thread, so a slow sysfs read delayed commands and telemetry
+    monkeypatch.setattr(pw, "POLL_S", 0.05)
+    m = make(tmp_path, alarm="0")
+    real = m._read_sources
+    calls = []
+
+    def slow():
+        calls.append(1)
+        time.sleep(0.4)                     # a stuck read, in the worker thread
+        return real()
+
+    m._read_sources = slow
+    m.start()                               # the startup pass reads inline (before the car drives)
+    lags = []
+    for _ in range(20):
+        t0 = time.monotonic()
+        await asyncio.sleep(0.01)
+        lags.append(time.monotonic() - t0)
+    m.stop()
+    assert calls, "the poll loop read in the background"
+    assert max(lags) < 0.1, f"loop timers delayed: {max(lags):.3f} s"
+    assert len(calls) <= 2, "a stuck read is not piled up every poll"
 
 
 # ---- motor_s ------------------------------------------------------------------------------------
