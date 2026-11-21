@@ -238,6 +238,85 @@ async def test_input_failure_stops_car_and_exits():
     await d.shutdown()
 
 
+async def test_stale_stamped_keys_are_dropped_after_reconnect():
+    d, link = await make_driver()
+    # R and W were read from the terminal on connection 1, but are processed after the reconnect (connection 2)
+    link.generation = 2
+    link.client = FakeClient()
+    d.submit("r", 1)
+    d.submit("w", 1)
+    await d.drain()
+    assert link.client.sent == [] and link.client.fired == [] and d.state.speed == 0
+    d.submit(" ", 1)                                             # a stale safety key still acts (harmless, safe)
+    await asyncio.sleep(0)
+    assert link.client.fired == [("stop", {})]
+    d.submit("r", 2)                                             # a key read on the current connection works
+    await d.drain()
+    assert link.client.sent == [("resume", {})]
+    await d.shutdown()
+
+
+async def test_keyreader_stamps_keys_when_read():
+    got = []
+    loop = asyncio.get_running_loop()
+    gen = [1]
+    r = carctl.KeyReader(loop, lambda k, s: got.append((k, s)), lambda why: None, lambda: gen[0])
+    r._push("w", r.stamp())                                      # read on connection 1
+    gen[0] = 2                                                   # reconnect before the loop gets to process it
+    await asyncio.sleep(0.05)
+    assert got == [("w", 1)]
+
+
+@pytest.mark.parametrize("event", ["obstacle_stop", "estop", "hold", "watchdog_stop", "hw_fault", "control_changed"])
+async def test_safety_event_discards_pending_and_in_flight_motion(event):
+    gate = asyncio.Event()
+    d, link = await make_driver(gate=gate)
+    d.act("steer+")                                              # in flight, ack delayed
+    await asyncio.sleep(0)
+    d.act("speed+")                                              # queued behind it
+    d.act("resume")
+    d.on_event(event)
+    assert not d._pending and d.state.speed == 0
+    gate.set()
+    await d.drain()
+    assert link.client.sent == [("steer", {"angle": 10})]        # the drive / resume never go out
+    await d.shutdown()
+
+
+async def test_ack_of_command_sent_before_event_is_ignored():
+    gate = asyncio.Event()
+    d, link = await make_driver(gate=gate)
+    d.act("speed+")                                              # drive in flight
+    await asyncio.sleep(0)
+    d.on_event("obstacle_stop")
+    gate.set()
+    await d.drain()
+    assert d.ack_speed is None and d.state.speed == 0
+
+
+async def test_motion_refused_when_not_controller():
+    d, link = await make_driver()
+    link.client.role = "viewer"
+    d.act("speed+")
+    assert not d._pending and link.errors
+    await d.shutdown()
+
+
+async def test_nothing_is_sent_after_quit():
+    d, link = await make_driver()
+    c = link.client
+    for k in ("q", "w", "r", "d", " ", "e"):                     # a buffered burst: q first
+        d.submit(k, 1)
+    await d.drain()
+    assert c.sent == [] and c.fired == [("stop", {})] and d.done.is_set()
+    d.act("speed+")
+    d.fail("late failure")
+    await d.drain()
+    assert c.sent == [] and c.fired == [("stop", {})]
+    await d.shutdown()
+    assert c.sent == [("stop", {})] and c.frames == [{"t": "control", "action": "release"}]
+
+
 async def test_keyreader_thread_failure_calls_on_fail(monkeypatch):
     got = []
     loop = asyncio.get_running_loop()

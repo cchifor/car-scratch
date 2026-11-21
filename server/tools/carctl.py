@@ -73,6 +73,7 @@ async def fetch_api(base: str, timeout: float = 2.0) -> Optional[dict]:
 
 _CSI_KEYS = {"A": "up", "B": "down", "C": "right", "D": "left"}
 _WIN_KEYS = {"H": "up", "P": "down", "K": "left", "M": "right"}
+_WIN_PREFIX = ("\x00", "\xe0")
 
 
 def decode_char(ch: str) -> str:
@@ -122,19 +123,19 @@ def key_to_action(key: str) -> Optional[str]:
 
 
 class KeyReader:
-    """Reads keys on a helper thread (termios cbreak + select, or msvcrt) and calls on_key(token) on the loop thread.
+    """Reads keys on a helper thread (termios cbreak + select, or msvcrt) and calls on_key(token, connection_generation) on the loop thread; the generation is read when the key is read from the terminal.
 
     There is no queue here: the Driver acts on each key as it arrives. Any failure of the input thread calls
     on_fail(reason) so the caller can stop the car and leave (a dead keyboard must never leave a speed active)."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, on_key: Callable[[str], None],
-                 on_fail: Callable[[str], None]):
-        self.loop, self.on_key, self.on_fail, self._stop = loop, on_key, on_fail, False
+    def __init__(self, loop: asyncio.AbstractEventLoop, on_key: Callable[[str, int], None],
+                 on_fail: Callable[[str], None], stamp: Callable[[], int] = lambda: 0):
+        self.loop, self.on_key, self.on_fail, self.stamp, self._stop = loop, on_key, on_fail, stamp, False
         self._thread = None
         self._saved = None
 
-    def _push(self, key: str) -> None:
-        self.loop.call_soon_threadsafe(self.on_key, key)
+    def _push(self, key: str, stamp: int) -> None:
+        self.loop.call_soon_threadsafe(self.on_key, key, stamp)
 
     def _fail(self, reason: str) -> None:
         if not self._stop:
@@ -188,8 +189,9 @@ class KeyReader:
             if not data:
                 self._fail("keyboard input closed (stdin EOF)")
                 return
+            stamp = self.stamp()                     # the connection this key was typed for: taken at read time
             for k in decode_posix(data.decode("utf-8", "ignore")):
-                self._push(k)
+                self._push(k, stamp)
 
     def _run_windows(self) -> None:
         import msvcrt
@@ -198,7 +200,8 @@ class KeyReader:
                 time.sleep(0.02)
                 continue
             ch = msvcrt.getwch()
-            self._push(decode_windows(ch, msvcrt.getwch()) if ch in ("\x00", "\xe0") else decode_windows(ch))
+            stamp = self.stamp()
+            self._push(decode_windows(ch, msvcrt.getwch()) if ch in _WIN_PREFIX else decode_windows(ch), stamp)
 
 
 # ---- drive state machine ------------------------------------------------------------------------------------
@@ -282,6 +285,7 @@ class Driver:
         self._epoch = 0                             # bumped by every safety key; stale replies are ignored
         self._fires: set = set()
         self._worker: Optional[asyncio.Task] = None
+        self.closing = False                        # set by quit: from then on nothing but the final stop / release is sent
 
     def start(self) -> None:
         self._worker = asyncio.create_task(self._run())
@@ -295,16 +299,29 @@ class Driver:
             self._pending.clear()
             self._epoch += 1
 
+    def halt(self) -> None:
+        """Forget all motion: unsent commands, the local target, and the replies of commands already sent."""
+        self._pending.clear()
+        self._epoch += 1
+        self.state.speed = 0
+        self.ack_speed = None
+
     def on_event(self, kind: str) -> None:
-        if kind in STOPPING_EVENTS:
-            self.state.speed = 0
-            self.ack_speed = None
+        if kind in STOPPING_EVENTS or kind == "control_changed":
+            self.halt()
 
     # -- input. Called on the loop thread for every key; never blocks.
-    def submit(self, key: str) -> None:
+    def submit(self, key: str, stamp: Optional[int] = None) -> None:
+        """`stamp` is the connection generation when the key was read from the terminal. A motion key typed for an
+        older connection is dropped; safety keys (stop, E-STOP, quit) always act."""
+        if self.closing:
+            return
         action = key_to_action(key)
-        if action:
-            self.act(action)
+        if not action:
+            return
+        if stamp is not None and stamp != self.link.generation and action not in SAFETY_ACTIONS:
+            return
+        self.act(action)
 
     def fail(self, reason: str) -> None:
         """The keyboard is gone: stop the car and leave through the normal exit path."""
@@ -314,10 +331,14 @@ class Driver:
         self.act("quit")
 
     def act(self, action: str) -> None:
+        if self.closing:                             # after quit nothing but the final stop / release is sent
+            return
         self.sync()
         if action in SAFETY_ACTIONS:
             # Stop / E-STOP / quit bypass everything: unsent motion is dropped and the frame goes out at once,
             # without waiting for a reply or for any in-flight command.
+            if action == "quit":
+                self.closing = True
             self._pending.clear()
             self._epoch += 1
             self.ack_speed = None
@@ -328,6 +349,9 @@ class Driver:
             return
         if self.link.client is None:
             self.link.note_error("not connected: key ignored")
+            return
+        if getattr(self.link.client, "role", "controller") != "controller":
+            self.link.note_error("not the controller: key ignored")
             return
         for op, fields in self.state.apply(action):
             kind = "drive" if op in ("drive", "stop") else op
@@ -359,7 +383,7 @@ class Driver:
             while self._pending:
                 kind = min(self._pending, key=lambda k: self._ORDER.get(k, 9))
                 gen, op, fields = self._pending.pop(kind)
-                if gen != self.link.generation:      # queued before a (re)connect: never replayed
+                if self.closing or gen != self.link.generation:      # closing, or queued before a (re)connect: never sent
                     continue
                 self._busy = True
                 try:
@@ -399,6 +423,7 @@ class Driver:
 
     async def shutdown(self) -> None:
         """Always: stop the car and release control (also after an exception)."""
+        self.closing = True
         if self._worker:
             self._worker.cancel()
         self._pending.clear()
@@ -952,7 +977,7 @@ async def run_dashboard(args: argparse.Namespace, driving: bool) -> int:
                 return 1
             driver.sync()
             driver.start()
-            keys = KeyReader(asyncio.get_running_loop(), driver.submit, driver.fail)
+            keys = KeyReader(asyncio.get_running_loop(), driver.submit, driver.fail, lambda: link.generation)
             keys.start()                             # keys typed before this point are never read
         with Live(console=console, screen=True, auto_refresh=False) as live:
             while not runner.done() and not (driver and driver.done.is_set()):
