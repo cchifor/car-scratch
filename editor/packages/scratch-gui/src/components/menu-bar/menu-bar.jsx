@@ -1,3 +1,4 @@
+/* eslint-disable react/no-unused-prop-types -- stock menu-bar props kept for the upstream API */
 import classNames from 'classnames';
 import {connect} from 'react-redux';
 import {compose} from 'redux';
@@ -15,7 +16,6 @@ import Button from '../button/button.jsx';
 import CommunityButton from './community-button.jsx';
 import ShareButton from './share-button.jsx';
 import {ComingSoonTooltip} from '../coming-soon/coming-soon.jsx';
-import Divider from '../divider/divider.jsx';
 import SaveStatus from './save-status.jsx';
 import SB3Downloader from '../../containers/sb3-downloader.jsx';
 import ProjectWatcher from '../../containers/project-watcher.jsx';
@@ -28,8 +28,9 @@ import FileMenu from './file-menu.jsx';
 import EditMenu from './edit-menu.jsx';
 import ModeMenu from './mode-menu.jsx';
 import AboutMenu from './about-menu.jsx';
+import ExamplesMenu from './examples-menu.jsx';
+import CarEstop from '../../containers/car-estop.jsx';
 
-import {openTipsLibrary, openDebugModal} from '../../reducers/modals';
 import {setPlayer} from '../../reducers/mode';
 import {
     isTimeTravel220022BC,
@@ -58,19 +59,12 @@ import {PLATFORM} from '../../lib/platform';
 
 import styles from './menu-bar.css';
 
-import helpIcon from '../../lib/assets/icon--tutorials.svg';
 import mystuffIcon from './icon--mystuff.png';
 import profileIcon from './icon--profile.png';
 import remixIcon from './icon--remix.svg';
 import dropdownCaret from './dropdown-caret.svg';
-import debugIcon from '../debug-modal/icons/icon--debug.svg';
 
-import scratchLogo from './scratch-logo.svg';
-import scratchLogoAndroid from './scratch-logo-android.svg';
-import ninetiesLogo from './nineties_logo.svg';
-import catLogo from './cat_logo.svg';
-import prehistoricLogo from './prehistoric-logo.svg';
-import oldtimeyLogo from './oldtimey-logo.svg';
+import scratchLogo from './car-scratch-logo.svg';
 
 import sharedMessages from '../../lib/shared-messages';
 
@@ -100,7 +94,7 @@ const ariaMessages = defineMessages({
     }
 });
 
-const getScratchLogo = platform => (platform === PLATFORM.ANDROID ? scratchLogoAndroid : scratchLogo);
+const getScratchLogo = () => scratchLogo;
 
 const MenuBarItemTooltip = ({
     children,
@@ -226,18 +220,8 @@ class MenuBar extends React.Component {
                 document.documentElement.style.height = '';
             }
 
-            // Change logo for modes
-            if (mode === '1990') {
-                document.getElementById('logo_img').src = ninetiesLogo;
-            } else if (mode === '2020') {
-                document.getElementById('logo_img').src = catLogo;
-            } else if (mode === '1920') {
-                document.getElementById('logo_img').src = oldtimeyLogo;
-            } else if (mode === '220022BC') {
-                document.getElementById('logo_img').src = prehistoricLogo;
-            } else {
-                document.getElementById('logo_img').src = getScratchLogo(this.props.platform);
-            }
+            // Every mode keeps the Car Scratch logo.
+            document.getElementById('logo_img').src = getScratchLogo(this.props.platform);
 
             this.props.onSetTimeTravelMode(mode);
         };
@@ -335,7 +319,7 @@ class MenuBar extends React.Component {
                         >
                             <img
                                 id="logo_img"
-                                alt="Scratch"
+                                alt="Car Scratch"
                                 className={classNames(styles.scratchLogo, {
                                     [styles.clickable]: typeof this.props.onClickLogo !== 'undefined'
                                 })}
@@ -372,6 +356,7 @@ class MenuBar extends React.Component {
                             restoreOptionMessage={this.restoreOptionMessage}
                             depth={1}
                         />
+                        <ExamplesMenu depth={1} />
                         {this.props.isTotallyNormal && (<ModeMenu
                             onSetMode={this.handleSetMode}
                             modeNow={this.props.modeNow}
@@ -455,37 +440,6 @@ class MenuBar extends React.Component {
                                 <CommunityButton className={styles.menuBarButton} />
                             </MenuBarItemTooltip>
                         ) : [])}
-                    </div>
-                    <Divider className={classNames(styles.divider)} />
-                    <div className={styles.fileGroup}>
-                        <button
-                            aria-label={this.props.intl.formatMessage(ariaMessages.tutorials)}
-                            className={
-                                classNames(styles.menuBarItem, styles.noOffset, styles.hoverable, 'tutorials-button')
-                            }
-                            onClick={this.props.onOpenTipLibrary}
-                        >
-                            <img
-                                className={styles.helpIcon}
-                                src={helpIcon}
-                            />
-                            <span className={styles.tutorialsLabel}>
-                                <FormattedMessage {...ariaMessages.tutorials} />
-                            </span>
-                        </button>
-                        <button
-                            aria-label={this.props.intl.formatMessage(ariaMessages.debug)}
-                            className={classNames(styles.menuBarItem, styles.noOffset, styles.hoverable)}
-                            onClick={this.props.onOpenDebugModal}
-                        >
-                            <img
-                                className={styles.helpIcon}
-                                src={debugIcon}
-                            />
-                            <span className={styles.debugLabel}>
-                                <FormattedMessage {...ariaMessages.debug} />
-                            </span>
-                        </button>
                     </div>
                 </div>
 
@@ -640,6 +594,11 @@ class MenuBar extends React.Component {
                     )}
                 </div>
 
+                <CarEstop
+                    vm={this.props.vm}
+                    className={styles.menuBarEstop}
+                />
+
                 {this.props.onClickAbout && (
                     <AboutMenu
                         onClick={this.props.onClickAbout}
@@ -708,8 +667,6 @@ MenuBar.propTypes = {
     onClickSaveAsCopy: PropTypes.func,
     onLogOut: PropTypes.func,
     onOpenRegistration: PropTypes.func,
-    onOpenTipLibrary: PropTypes.func,
-    onOpenDebugModal: PropTypes.func,
     onProjectTelemetryEvent: PropTypes.func,
     onRequestCloseLogin: PropTypes.func,
     onSeeCommunity: PropTypes.func,
@@ -786,8 +743,6 @@ const mapStateToProps = (state, ownProps) => {
 
 const mapDispatchToProps = (dispatch, ownProps) => ({
     autoUpdateProject: () => dispatch(autoUpdateProject()),
-    onOpenTipLibrary: () => dispatch(openTipsLibrary()),
-    onOpenDebugModal: () => dispatch(openDebugModal()),
     onClickNew: needSave => dispatch(requestNewProject(needSave)),
     onClickLogin: ownProps.onClickLogin ?? (() => dispatch(openLoginMenu())),
     onClickSave: () => dispatch(manualUpdateProject()),

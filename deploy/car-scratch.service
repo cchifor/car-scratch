@@ -1,0 +1,22 @@
+[Unit]
+Description=Car Scratch server (Pi car)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WatchdogSec=3
+Restart=always
+RestartSec=2
+TimeoutStopSec=2
+Environment=PYTHONPATH=%h/car-scratch/current/server
+Environment=PYTHONUNBUFFERED=1
+# deploy.sh writes CAR_SCRATCH_SHA=<sha> here; the server reports it in /api/status.
+EnvironmentFile=-%h/car-scratch/current/REVISION.env
+# Rear motors are zeroed before the server starts and after it stops, however it ended.
+ExecStartPre=-/usr/bin/python3 -m picar_server.safe_stop
+ExecStart=/usr/bin/python3 -m picar_server --port 8080 --hardware auto --www %h/car-scratch/current/www --examples %h/car-scratch/current/examples --source %h/car-scratch/current/source --data %h/.local/share/car-scratch --config %h/.config/car-scratch
+ExecStopPost=-/usr/bin/python3 -m picar_server.safe_stop
+
+[Install]
+WantedBy=default.target

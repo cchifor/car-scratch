@@ -1,3 +1,9 @@
+.about-button {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+}
+
 .about-icon {
     height: 1.25rem;
     margin: 0.5rem;

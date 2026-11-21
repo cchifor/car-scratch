@@ -54,7 +54,7 @@ const projectData = (translateFunction?: TranslatorFunction): object => {
             },
             {
                 isStage: false,
-                name: translator(messages.sprite, {index: 1}),
+                name: 'Car',
                 variables: {},
                 lists: {},
                 broadcasts: {},
@@ -62,22 +62,13 @@ const projectData = (translateFunction?: TranslatorFunction): object => {
                 currentCostume: 0,
                 costumes: [
                     {
-                        assetId: 'bcf454acf82e4504149f7ffe07081dbc',
-                        name: translator(messages.costume, {index: 1}),
+                        assetId: 'ca638974c72dcdf2b039ea6d16e1b35b',
+                        name: 'car',
                         bitmapResolution: 1,
-                        md5ext: 'bcf454acf82e4504149f7ffe07081dbc.svg',
+                        md5ext: 'ca638974c72dcdf2b039ea6d16e1b35b.svg',
                         dataFormat: 'svg',
-                        rotationCenterX: 48,
-                        rotationCenterY: 50
-                    },
-                    {
-                        assetId: '0fb9be3e8397c983338cb71dc84d0b25',
-                        name: translator(messages.costume, {index: 2}),
-                        bitmapResolution: 1,
-                        md5ext: '0fb9be3e8397c983338cb71dc84d0b25.svg',
-                        dataFormat: 'svg',
-                        rotationCenterX: 46,
-                        rotationCenterY: 53
+                        rotationCenterX: 60,
+                        rotationCenterY: 40
                     }
                 ],
                 sounds: [

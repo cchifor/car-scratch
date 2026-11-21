@@ -77,7 +77,7 @@ const AboutMenu = ({
 
     return (
         <button
-            className={classNames(stylesMenuBar.menuBarItem, stylesMenuBar.hoverable, {
+            className={classNames(stylesMenuBar.menuBarItem, stylesMenuBar.hoverable, stylesAboutMenu.aboutButton, {
                 [stylesMenuBar.active]: isExpanded()
             })}
             onClick={handleOnOpen}
@@ -97,9 +97,9 @@ const AboutMenu = ({
                 onRequestClose={handleOnClose}
             >
                 {
-                    onClick.map(itemProps => (
+                    onClick.map((itemProps, index) => (
                         <MenuItem
-                            key={itemProps.title}
+                            key={typeof itemProps.title === 'string' ? itemProps.title : index}
                             onClick={wrapAboutMenuCallback(itemProps.onClick)}
                             onParentKeyDown={handleKeyDownOpenMenu}
                             isDataMenuItem
@@ -119,7 +119,7 @@ AboutMenu.propTypes = {
         PropTypes.func, // button mode: call this callback when the About button is clicked
         PropTypes.arrayOf( // menu mode: list of items in the About menu
             PropTypes.shape({
-                title: PropTypes.string, // text for the menu item
+                title: PropTypes.node, // text for the menu item
                 onClick: PropTypes.func // call this callback when the menu item is clicked
             })
         )

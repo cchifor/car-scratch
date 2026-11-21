@@ -6,6 +6,7 @@ import {connect} from 'react-redux';
 import VM from '@scratch/scratch-vm';
 import AudioEngine from 'scratch-audio';
 
+import log from './log';
 import {setProjectUnchanged} from '../reducers/project-changed';
 import {
     LoadingStates,
@@ -24,7 +25,8 @@ const vmManagerHOC = function (WrappedComponent) {
         constructor (props) {
             super(props);
             bindAll(this, [
-                'loadProject'
+                'loadProject',
+                'loadCarExtension'
             ]);
         }
         componentDidMount () {
@@ -34,6 +36,7 @@ const vmManagerHOC = function (WrappedComponent) {
                 this.props.vm.setCompatibilityMode(true);
                 this.props.vm.initialized = true;
                 this.props.vm.setLocale(this.props.locale, this.props.messages);
+                this.loadCarExtension();
             }
             if (!this.props.isPlayerOnly && !this.props.isStarted) {
                 this.props.vm.start();
@@ -49,6 +52,18 @@ const vmManagerHOC = function (WrappedComponent) {
             // Start the VM if entering editor mode with an unstarted vm
             if (!this.props.isPlayerOnly && !this.props.isStarted) {
                 this.props.vm.start();
+            }
+        }
+        // The Pi Car blocks are always available; the extension is built in. A missing extension
+        // must never stop the editor from starting.
+        loadCarExtension () {
+            const {vm} = this.props;
+            try {
+                if (vm.extensionManager && !vm.extensionManager.isExtensionLoaded('picar')) {
+                    vm.extensionManager.loadExtensionIdSync('picar');
+                }
+            } catch (e) {
+                log.warn('Could not load the picar extension', e);
             }
         }
         loadProject () {

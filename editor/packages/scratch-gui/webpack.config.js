@@ -21,6 +21,9 @@ const commonHtmlWebpackPluginOptions = {
     gtm_env_auth: process.env.GTM_ENV_AUTH || ''
 };
 
+// The car server (or the simulator) that the dev server forwards /ws, /api, /examples and /source to.
+const picarServer = process.env.PICAR_SERVER || 'http://localhost:8080';
+
 const cssModuleExceptions = [
     /\.raw\.css$/, // Allow for overriding CSS classes from libraries
     /[\\/]driver\.js[\\/].*\.css$/ // driver.js CSS
@@ -76,7 +79,9 @@ const baseConfig = new ScratchWebpackConfigBuilder(
         'process.env.DEBUG': Boolean(process.env.DEBUG),
         'process.env.GA_ID': `"${process.env.GA_ID || 'UA-000000-01'}"`,
         'process.env.GTM_ENV_AUTH': `"${process.env.GTM_ENV_AUTH || ''}"`,
-        'process.env.GTM_ID': process.env.GTM_ID ? `"${process.env.GTM_ID}"` : null
+        'process.env.GTM_ID': process.env.GTM_ID ? `"${process.env.GTM_ID}"` : null,
+        // The commit this bundle is built from; the car link compares it with the server's (never when 'dev').
+        __PICAR_BUILD_SHA__: JSON.stringify(process.env.BUILD_SHA || 'dev')
     }))
     .addPlugin(new CopyWebpackPlugin({
         patterns: [
@@ -164,13 +169,16 @@ const distStandaloneConfig = baseConfig.clone()
 const buildConfig = baseConfig.clone()
     .enableDevServer(process.env.PORT || 8601)
     .merge({
+        devServer: {
+            proxy: [
+                {context: ['/ws'], target: picarServer, ws: true},
+                {context: ['/api', '/examples', '/source'], target: picarServer}
+            ]
+        }
+    })
+    .merge({
         entry: {
-            gui: './src/playground/index.jsx',
-            guistandalone: './src/playground/standalone.jsx',
-            blocksonly: './src/playground/blocks-only.jsx',
-            compatibilitytesting: './src/playground/compatibility-testing.jsx',
-            sitemaintenance: './src/playground/site-maintenance.jsx',
-            player: './src/playground/player.jsx'
+            gui: './src/playground/index.jsx'
         },
         output: {
             path: path.resolve(__dirname, 'build'),
@@ -186,48 +194,18 @@ const buildConfig = baseConfig.clone()
         ...commonHtmlWebpackPluginOptions,
         chunks: ['gui'],
         template: 'src/playground/index.ejs',
-        title: 'Scratch 3.0 GUI'
-    }))
-    .addPlugin(new HtmlWebpackPlugin({
-        ...commonHtmlWebpackPluginOptions,
-        chunks: ['guistandalone'],
-        filename: 'standalone.html',
-        template: 'src/playground/index.ejs',
-        title: 'Scratch 3.0 GUI: Standalone Mode'
-    }))
-    .addPlugin(new HtmlWebpackPlugin({
-        ...commonHtmlWebpackPluginOptions,
-        chunks: ['blocksonly'],
-        filename: 'blocks-only.html',
-        template: 'src/playground/index.ejs',
-        title: 'Scratch 3.0 GUI: Blocks Only Example'
-    }))
-    .addPlugin(new HtmlWebpackPlugin({
-        ...commonHtmlWebpackPluginOptions,
-        chunks: ['compatibilitytesting'],
-        filename: 'compatibility-testing.html',
-        template: 'src/playground/index.ejs',
-        title: 'Scratch 3.0 GUI: Compatibility Testing'
-    }))
-    .addPlugin(new HtmlWebpackPlugin({
-        ...commonHtmlWebpackPluginOptions,
-        chunks: ['sitemaintenance'],
-        filename: 'site-maintenance.html',
-        template: 'src/playground/index.ejs',
-        title: 'Scratch'
-    }))
-    .addPlugin(new HtmlWebpackPlugin({
-        ...commonHtmlWebpackPluginOptions,
-        chunks: ['player'],
-        filename: 'player.html',
-        template: 'src/playground/index.ejs',
-        title: 'Scratch 3.0 GUI: Player Example'
+        title: 'Car Scratch'
     }))
     .addPlugin(new CopyWebpackPlugin({
         patterns: [
             {
                 from: 'static',
                 to: 'static'
+            },
+            {
+                // The manifest lives at the site root so its relative icon paths resolve.
+                from: 'static/car-scratch/manifest.webmanifest',
+                to: 'manifest.webmanifest'
             },
             {
                 from: 'extensions/**',

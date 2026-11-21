@@ -1,0 +1,5 @@
+{"id":"corridor","title":"Corridor (obstacle stop)","size":[460,200],
+ "walls":[[-220,-100,220,-100],[-220,100,220,100],[-220,-100,-220,100],[220,-100,220,100]],
+ "line":{"points":[[-200,0],[200,0]],"closed":false,"width":2.0},
+ "lights":[],
+ "start":{"x":48,"y":0,"dir":90}}
