@@ -186,31 +186,42 @@ frames switched moving reads off until the next stop, which at these rates happe
 **Risk.** Bus time per sample is bounded as before: at most two quick reads (about 6 ms) per sample under the bus
 lock, and a module that keeps failing is dropped after 3 samples (about 120 ms).
 
-## D7 — Trust a "nothing there" reading for 0.45 s while driving forward (owner decision, 2026-11-21)
+## D7 — Trust a "nothing there" reading for 0.48 s while driving forward (owner decision, 2026-11-21)
 
 **Context.** Facing open space the ultrasonic module answers most pings with its 401.5 ms long cycle (D5), so an
 `ok`/`far` reading younger than 150 ms is rare and forward driving was refused or stopped (`sensor_fault: no fresh
 distance reading`, then `BLOCKED`).
 
 **Owner decision.** Trust a "nothing there" reading for a short time while driving forward, accepting that the car
-is blind for that long. Proposed at 0.4 s (about 10 cm at full speed). Measured on the car with a passive pin
-observer (60 s facing open space): consecutive long cycles start 409 to 413 ms apart, so 0.4 s still stopped the car
-about 80 times a minute (54 % of the time refused at 0.15 s; 0 stops at 0.45 s and above). The owner chose 0.45 s:
-blind for up to 11 cm at full speed (24.4 cm/s).
+is blind for that long. Measured on the car with a passive pin observer (60 s facing open space): consecutive long
+cycles start 409 to 413 ms apart, and a cycle is only known 40 ms after its ping, its sample reaching the controller
+a few ms later; so counted from the ping the car is blind up to about 0.463 s between readings. 0.4 s (first
+proposal) stopped the car about 80 times a minute. The owner chose **0.48 s counted from the ping**: blind for up to
+11.7 cm at full speed (24.4 cm/s). (A first build counted 0.45 s from the detection, which really allowed about 0.49 s.)
 
 **Rule.**
 
-1. A "nothing there" reading (`Sample.clear_t`) is a ping that ended `far` or that began a long cycle (no echo for
-   40 ms), in a sample where no ping heard an echo. Finding the module still busy is not a new reading.
+1. A "nothing there" reading (`Sample.clear_t`, the time of its ping) is a ping that ended `far`, or that began a long
+   cycle cleanly (no echo for 40 ms without a timing gap), in a sample where no ping heard an echo. Finding the
+   module still busy is not a new reading. A ping discarded for a timing gap that may have ended within range still
+   counts as an echo (`Sample.echo_cm` = the closest it could have been).
 2. Forward motion may start or continue when an `ok`/`far` distance was measured at most 150 ms ago (unchanged) **or**
-   a "nothing there" reading is at most 0.45 s old, unless an echo closer than 1 m (`Sample.echo_cm`, from any ping,
-   even in an inconclusive sample) was heard in the last second. An object last heard at just under 1 m cannot come
-   closer than about 63 cm before the trust runs out, even at full speed.
+   a "nothing there" reading is at most 0.48 s old **and** no echo was heard after it **and** no echo closer than the
+   near distance was heard in the last second. The near distance is 1 m, or twice the full-speed stopping margin when
+   that is more (a large `stop_cm`). An object last heard just under 1 m away cannot come closer than about 60 cm
+   before the trust runs out, even at full speed.
 3. While `blocked`, a "no reading" sample inside a trusted window counts like `far` toward releasing it.
 4. Unchanged: a fault still stops and refuses; the obstacle guard acts on every `ok` reading; the controller loop
    stops forward motion when samples stop arriving for 0.5 s; the simulator sends no `clear_t`, so it behaves as
    before.
 
-**Residual.** For up to 0.45 s the car drives on a reading that said nothing was in range: something that moves into
+**Independent review (third round) before the first deploy** found three ways the first build relaxed more than
+this: a near echo dropped for a timing gap vanished entirely; the window counted from the detection, so a stuck line
+or a scheduling delay stretched it; and an obstacle whose 150 ms reading had expired could be forgotten in favour of
+an older "nothing there". All three are fixed as above, each with a test, plus integration tests that run the real
+sensor code into the controller on one clock (open-space rhythm keeps driving; a line stuck high after one cycle
+stops within the window; a dropped near echo blocks the trust).
+
+**Residual.** For up to 0.48 s the car drives on a reading that said nothing was in range: something that moves into
 the path in that time, or a reflector the module cannot hear (which can already read `far`), is not seen until the
 next reading.

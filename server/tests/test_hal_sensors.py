@@ -190,6 +190,34 @@ def test_any_echo_heard_cancels_the_no_echo_observation():
     clock.advance(1.0)
 
 
+def test_no_echo_time_is_the_ping_not_the_detection():
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.027)
+    s = b.hub.read()
+    assert s.t - s.clear_t >= 0.027                              # far: the ping, not the end of the 27 ms pulse
+    gpio.queue(gpio.long_cycle())
+    clock.advance(0.04)
+    s = b.hub.read()
+    assert s.clear_t is not None and s.t - s.clear_t >= 0.040    # long cycle: its ping, not the 40 ms detection
+
+
+def test_a_discarded_near_echo_is_still_an_echo():
+    # Review finding: a scheduling gap during a 50 cm echo drops the distance, but not the fact that it was heard.
+    b, bus, gpio, clock = make()
+    gpio.queue(gpio.echo_cm(50), (0.0003, 0.027), gpio.long_cycle())
+    clock.gap_after(60, 0.002)
+    s = b.hub.read()
+    assert s.clear_t is None and s.echo_cm is not None and s.echo_cm <= 50.5
+
+
+def test_a_long_cycle_begun_during_a_timing_gap_is_not_a_no_echo():
+    b, bus, gpio, clock = make()
+    gpio.queue(gpio.long_cycle())
+    clock.gap_after(100, 0.002)
+    s = b.hub.read()
+    assert s.dist_state == "none" and s.clear_t is None
+
+
 def test_ok_sample_reports_the_closest_echo():
     b, bus, gpio, clock = make()
     gpio.queue(gpio.echo_cm(60), gpio.echo_cm(40), gpio.echo_cm(50))

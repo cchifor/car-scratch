@@ -90,7 +90,8 @@ class Controller:
         self._sample_at = now
         self._last_good_t: Optional[float] = None   # last ok/far sample; None until the first one
         self._last_clear_t: Optional[float] = None  # last "nothing there" reading (Sample.clear_t, decision D7)
-        self._last_near_t: Optional[float] = None   # last echo closer than safety.TRUST_NEAR_CM
+        self._last_near_t: Optional[float] = None   # last echo closer than the D7 near distance
+        self._last_echo_t: Optional[float] = None   # last echo of any distance (a "nothing there" must be newer)
         self._clear_since: Optional[float] = None
         self._last_ok: Optional[tuple[float, float]] = None   # (cm, time) of the latest ok sample, cleared by a far one
         self._us_fault = False
@@ -320,9 +321,11 @@ class Controller:
     def _trusted_clear_locked(self, now: float) -> bool:
         """A "nothing there" reading at most NO_ECHO_TRUST_S old, and no echo closer than TRUST_NEAR_CM heard in the
         last NEAR_ECHO_MEMORY_S (decision D7). Caller holds self._lock."""
-        c, n = self._last_clear_t, self._last_near_t
+        c, n, e = self._last_clear_t, self._last_near_t, self._last_echo_t
         if c is None or now - c > safety.NO_ECHO_TRUST_S:
             return False
+        if e is not None and e >= c:
+            return False                   # an echo heard after it: that is the newer information
         return n is None or now - n > safety.NEAR_ECHO_MEMORY_S
 
     def _fresh_locked(self, now: float) -> bool:
@@ -649,9 +652,11 @@ class Controller:
                 measured = min(now, s.t)
                 self._last_good_t = measured
                 self._last_ok = (s.dist_cm, measured) if s.dist_state == DIST_OK and s.dist_cm is not None else None
-            near = [c for c in (s.echo_cm, s.dist_cm if s.dist_state == DIST_OK else None) if c is not None]
-            if near and min(near) < safety.TRUST_NEAR_CM:
-                self._last_near_t = min(now, s.t)
+            echoes = [c for c in (s.echo_cm, s.dist_cm if s.dist_state == DIST_OK else None) if c is not None]
+            if echoes:
+                self._last_echo_t = min(now, s.t)
+                if min(echoes) < max(safety.TRUST_NEAR_CM, 2.0 * self._margin(safety.SPEED_MAX)):
+                    self._last_near_t = min(now, s.t)
             if s.clear_t is not None and s.dist_state in (DIST_FAR, DIST_NONE):
                 self._last_clear_t = min(now, s.clear_t)
             fault_now = s.dist_state == DIST_FAULT

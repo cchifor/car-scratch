@@ -54,7 +54,9 @@ class Ultrasonic:
     def __init__(self, gpio, clock, pin: int = US_PIN):
         self.gpio, self.clock, self.pin = gpio, clock, pin
         self._busy_since: Optional[float] = None   # start of an echo still high at ECHO_STUCK_S (pin left as input)
-        self.busy_started = False                  # the last ping() began a long cycle (not: found the module busy)
+        self.busy_started = False                  # the last ping() began a long cycle cleanly (not: found it busy)
+        self.ping_start: Optional[float] = None    # the last ping()'s echo rise (its "nothing there" time)
+        self.lost_echo_cm: Optional[float] = None  # the last ping() was discarded but may have been an echo this close
         self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
         self.echo_cm: Optional[float] = None       # measure(): closest echo heard
 
@@ -64,6 +66,7 @@ class Ultrasonic:
         1 ms while the echo is high, which makes the timing untrustworthy)."""
         g, c, p = self.gpio, self.clock, self.pin
         self.busy_started = False
+        self.ping_start = self.lost_echo_cm = None
         if self._busy_since is not None:
             # Never trigger while the module holds the line high: it ignores triggers until its cycle ends, and
             # driving the pin low would fight the module's output. Report busy until the line drops; a line high
@@ -84,7 +87,8 @@ class Ultrasonic:
         while g.input(p) == 0:
             if c.monotonic() - t0 > ECHO_START_TIMEOUT_S:
                 return None
-        start = prev = c.monotonic()
+        start = prev = last_high = c.monotonic()
+        self.ping_start = start
         gap = False
         while True:
             high = g.input(p) == 1
@@ -93,12 +97,17 @@ class Ultrasonic:
             prev = now
             if not high:
                 break
+            last_high = now
             if now - start > ECHO_STUCK_S:
                 self._busy_since = start       # the pin stays an input; the next ping checks the line first
-                self.busy_started = True
+                self.busy_started = not gap    # 40 ms without an echo, timed cleanly: a "nothing there" reading
                 return BUSY
         dur = now - start
         if gap:
+            # The timing is untrustworthy, but the echo may have ended within range: it ended after last_high, so it
+            # was at least this close. Keep that as an echo (it vetoes the D7 trust) even though the ping is dropped.
+            if last_high - start <= ECHO_FAR_S:
+                self.lost_echo_cm = (last_high - start) * 34300 / 2
             return None
         if dur > ECHO_FAR_S:
             return FAR
@@ -113,13 +122,15 @@ class Ultrasonic:
         self.clear_t = self.echo_cm = None
         for _ in range(n):
             v = self.ping()
+            if self.lost_echo_cm is not None:
+                self.echo_cm = self.lost_echo_cm if self.echo_cm is None else min(self.echo_cm, self.lost_echo_cm)
             if v is BUSY:
-                if self.busy_started:                      # nothing heard for 40 ms: a "nothing there" reading
-                    self.clear_t = self.clock.monotonic()
+                if self.busy_started:                      # nothing heard for 40 ms: "nothing there" at the ping
+                    self.clear_t = self.ping_start
                 return statistics.median_low(vals) if len(vals) >= need else BUSY
             if v is not None:
                 if v >= FAR:
-                    self.clear_t = self.clock.monotonic()
+                    self.clear_t = self.ping_start
                 else:
                     self.echo_cm = v if self.echo_cm is None else min(self.echo_cm, v)
                 vals.append(v)
