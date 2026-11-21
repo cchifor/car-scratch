@@ -96,18 +96,22 @@ psk=$(head -n 1 "$PSK_FILE")
 
 if [ -s "$MODE_FILE" ]; then say "kept the existing mode: $(cat "$MODE_FILE")"; else echo auto > "$MODE_FILE"; say "wrote $MODE_FILE (auto)"; fi
 
-# the NetworkManager connection (created or brought back in line; never autoconnects)
+# The NetworkManager connection (created or brought back in line; never autoconnects).
+# The passphrase is NOT stored in it and never appears on a command line: psk-flags 2 ("not saved")
+# makes NetworkManager ask for it at every activation, and car-wifi answers from
+# /etc/car-scratch/hotspot.psk through `nmcli connection up ... passwd-file <0600 temp file>`.
 set_profile() {
     "$@" \
         connection.autoconnect no \
         802-11-wireless.ssid "$SSID" 802-11-wireless.mode ap 802-11-wireless.band bg 802-11-wireless.channel 6 \
         802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.proto rsn \
         802-11-wireless-security.pairwise ccmp 802-11-wireless-security.group ccmp \
-        802-11-wireless-security.psk "$psk" \
+        802-11-wireless-security.psk-flags 2 \
         ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method disabled > /dev/null
 }
 if nmcli -g connection.id connection show id "$HOTSPOT" >/dev/null 2>&1; then
-    set_profile nmcli connection modify id "$HOTSPOT"
+    # also drops a passphrase an earlier version of this installer stored in the profile
+    set_profile nmcli connection modify id "$HOTSPOT" 802-11-wireless-security.psk ""
     say "updated the NetworkManager connection $HOTSPOT (SSID $SSID; re-activate it to apply changes)"
 else
     set_profile nmcli connection add type wifi ifname "$IFACE" con-name "$HOTSPOT"
@@ -189,23 +193,55 @@ wait_active() {
 
 hotspot_up() {
     has_hotspot || { log "ERROR: no $HOTSPOT connection (run wifi-setup.sh again)"; return 1; }
-    if nmcli -w "$SWITCH_WAIT" connection up id "$HOTSPOT" >/dev/null 2>&1; then
+    [ -s "$PSK_FILE" ] || { log "ERROR: no passphrase in $PSK_FILE"; return 1; }
+    # the passphrase reaches nmcli through a root-only file, never through a command line
+    mkdir -p "$STATE_DIR"
+    pw=$(umask 077; mktemp "$STATE_DIR/pw.XXXXXX") || { log "ERROR: cannot create a temp file"; return 1; }
+    printf '802-11-wireless-security.psk:%s\n' "$(head -n 1 "$PSK_FILE")" > "$pw"
+    if nmcli -w "$SWITCH_WAIT" connection up id "$HOTSPOT" passwd-file "$pw" >/dev/null 2>&1; then
+        rm -f "$pw"
         log "hotspot $HOTSPOT is active"
         return 0
     fi
+    rm -f "$pw"
     log "ERROR: could not activate $HOTSPOT"
     return 1
 }
+
+# Backoff for a home profile that is in range but does not come up (wrong password, no DHCP):
+# after a failed switch it is not tried again for 10 min, doubling to at most 1 h; success resets.
+now() { printf '%s\n' "${CAR_WIFI_NOW:-$(date +%s)}"; }
+backoff_file() { printf '%s/backoff.%s\n' "$STATE_DIR" "$(printf '%s' "$1" | cksum | cut -d' ' -f1)"; }
+backed_off() {
+    f=$(backoff_file "$1")
+    [ -r "$f" ] || return 1
+    IFS=" " read -r until _ < "$f" || return 1
+    [ "$(now)" -lt "$until" ]
+}
+note_switch_failed() {
+    f=$(backoff_file "$1")
+    interval=600
+    if [ -r "$f" ]; then
+        IFS=" " read -r _ old < "$f" || old=0
+        interval=$((old * 2))
+        [ "$interval" -ge 600 ] || interval=600
+        [ "$interval" -le 3600 ] || interval=3600
+    fi
+    echo "$(($(now) + interval)) $interval" > "$f"
+    log "watch: '$1' will not be tried again for $((interval / 60)) min"
+}
+note_switch_ok() { rm -f "$(backoff_file "$1")"; }
 
 # Bring up an explicit saved infrastructure profile (never the hotspot: "nmcli device connect" may
 # pick it). The profile whose SSID is in range goes first, then up to two others (hidden networks).
 # 0 when one of them is verified active within SWITCH_WAIT.
 try_home() {
     first=$(visible_profile)
-    list=$first
-    [ -z "$first" ] || list=$first$(printf '\n')
     others=$(infra_profiles | grep -vxF -- "${first:-/}" | sed -n 1,2p)
-    list=$list$others
+    # a literal newline: "$(printf '\n')" would be stripped and glue "Home" and "Backup" together
+    nl='
+'
+    list=$first$nl$others
     oldifs=$IFS
     IFS='
 '
@@ -248,6 +284,7 @@ visible_profile() {
         s=$(nmcli -g 802-11-wireless.ssid connection show id "$p" 2>/dev/null | sed -n 1p)
         s=$(unesc "$s")
         [ -n "$s" ] || continue
+        if [ -n "${USE_BACKOFF:-}" ] && backed_off "$p"; then continue; fi
         if printf '%s\n' "$seen" | grep -qxF -- "$s"; then
             set +f
             IFS=$oldifs
@@ -299,16 +336,18 @@ cmd_watch() {
     rm -f "$STATE_DIR/nowifi"
     [ "$c" = "$HOTSPOT" ] || return 0
     [ "$(station_count)" -eq 0 ] || return 0
-    target=$(visible_profile)
+    target=$(USE_BACKOFF=1 visible_profile)
     [ -n "$target" ] || return 0
     # someone may have joined while we scanned
     [ "$(station_count)" -eq 0 ] || { log "watch: a client joined during the scan, staying on the hotspot"; return 0; }
     log "watch: no clients and '$target' is in range, leaving the hotspot"
     nmcli connection down id "$HOTSPOT" >/dev/null 2>&1 || true
-    nmcli -w "$SWITCH_WAIT" connection up id "$target" >/dev/null 2>&1 || true
+    nmcli -w "$SWITCH_WAIT" connection up id "$target" ifname "$IFACE" >/dev/null 2>&1 || true
     if wait_active "$target" "$SWITCH_WAIT"; then
+        note_switch_ok "$target"
         log "watch: connected to '$target'"
     else
+        note_switch_failed "$target"
         log "watch: '$target' did not come up within ${SWITCH_WAIT}s, restoring the hotspot"
         hotspot_up
     fi
@@ -413,10 +452,10 @@ cmd_password() {
         umask 077
         printf '%s\n' "$p" > "$PSK_FILE.new" && mv "$PSK_FILE.new" "$PSK_FILE"
     )
-    nmcli connection modify id "$HOTSPOT" 802-11-wireless-security.psk "$p" >/dev/null || die "could not update the $HOTSPOT connection"
+    # nothing is handed to nmcli here: the profile keeps no secret, hotspot_up reads the file
     log "hotspot passphrase changed"
     if [ "$(active_conn)" = "$HOTSPOT" ]; then
-        echo "the hotspot is active: it keeps the old passphrase until it restarts (reboot, or car-wifi test-hotspot)"
+        echo "the hotspot is active: it keeps the old passphrase until it is restarted (reboot, or car-wifi test-hotspot)"
     fi
 }
 

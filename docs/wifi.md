@@ -86,3 +86,17 @@ network. If anything goes wrong before then, power-cycling the car also clears t
   means the car is off the home network until it switches back.
 - Scanning for the home network briefly disturbs the hotspot, which is why the car only does it when
   nobody is connected.
+
+## Notes on behaviour
+
+- A home network that is in range but unusable (wrong password, no DHCP) is not retried at every check.
+  After a failed switch the car leaves it alone for 10 minutes, then 20, 40, up to 1 hour between tries;
+  a successful connection resets this. (Each try briefly drops the hotspot, which is why it is limited.)
+- Where the passphrase lives: only in `/etc/car-scratch/hotspot.psk` (root, mode 0600). The NetworkManager
+  `car-hotspot` connection is created with `psk-flags 2` ("not saved"), so it holds no secret, and
+  `car-wifi` supplies the passphrase each time the hotspot is activated, through a temporary root-only
+  `nmcli ... passwd-file`. The passphrase therefore never appears on a command line (`ps`, sudo logs) and
+  `car-wifi password --stdin/--prompt` just rewrites the file; the new one applies the next time the
+  hotspot starts (reboot, or `test-hotspot`).
+- Note: if you ever activate `car-hotspot` by hand with `nmcli connection up`, NetworkManager will ask for
+  the passphrase; use `car-wifi test-hotspot` / `car-wifi hotspot` instead.

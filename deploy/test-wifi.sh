@@ -36,9 +36,13 @@ case "$a" in
         if [ -n "$(active)" ]; then echo "100 (connected)"; active; echo; else echo "30 (disconnected)"; echo "--"; fi ;;
     *"GENERAL.CONNECTION device show"*) active; echo ;;
     *"connection up"*)
-        name=; prev=; for x; do [ "$prev" = id ] && name=$x; prev=$x; done
-        if [ "$name" = car-hotspot ]; then [ -z "${HOTSPOT_FAIL:-}" ] || exit 4; printf '%s' "$name" > "$FAKE/active"
-        elif [ -n "${HOME_NEVER_ACTIVE:-}" ]; then : > "$FAKE/active"
+        name=; pwf=; prev=; for x; do [ "$prev" = id ] && name=$x; [ "$prev" = passwd-file ] && pwf=$x; prev=$x; done
+        if [ "$name" = car-hotspot ]; then
+            [ -z "${HOTSPOT_FAIL:-}" ] || exit 4
+            # the profile keeps no secret (psk-flags 2): activation must supply it in a passwd-file
+            [ -n "$pwf" ] && grep -q '^802-11-wireless-security.psk:' "$pwf" || exit 5
+            cp "$pwf" "$FAKE/passwd.seen"; printf '%s' "$name" > "$FAKE/active"
+        elif [ -n "${HOME_NEVER_ACTIVE:-}" ] || [ "$name" = "${HOME_FAIL_PROFILE:-}" ]; then : > "$FAKE/active"
         else printf '%s' "$name" > "$FAKE/active"; fi ;;
     *"connection down"*) [ "$(active)" = "$last" ] && : > "$FAKE/active"; exit 0 ;;
     *"device connect"*)  # the trap: NM may pick the hotspot
@@ -88,19 +92,20 @@ export PATH="$T/bin:$PATH"
 
 export FAKE="$T/fake" HOME_PROFILE=netplan-wlan0-CasaChifor
 export CAR_WIFI_CONF_DIR="$T/conf" CAR_WIFI_STATE_DIR="$T/state" CAR_WIFI_SELF="$T/car-wifi"
-unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE IW_FAIL SYSTEMD_RUN_FAIL HOTSPOT_FAIL CAR_WIFI_ROOT || true
+unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE HOME_FAIL_PROFILE CAR_WIFI_NOW IW_FAIL SYSTEMD_RUN_FAIL HOTSPOT_FAIL CAR_WIFI_ROOT || true
 
 # fresh FAKE state: a saved home profile and a hotspot profile, nothing active, nobody connected
 fresh() {
     rm -rf "$FAKE" "$T/state" "$T/conf"
     mkdir -p "$FAKE" "$T/conf"
-    unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE IW_FAIL SYSTEMD_RUN_FAIL HOTSPOT_FAIL
+    unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE HOME_FAIL_PROFILE CAR_WIFI_NOW IW_FAIL SYSTEMD_RUN_FAIL HOTSPOT_FAIL
     printf '%s\n' "netplan-wlan0-CasaChifor:802-11-wireless" "car-hotspot:802-11-wireless" "Wired connection 1:802-3-ethernet" > "$FAKE/profiles"
     echo CasaChifor > "$FAKE/ssid.netplan-wlan0-CasaChifor"
     echo PiCar-ABCD > "$FAKE/ssid.car-hotspot"
     : > "$FAKE/active"; : > "$FAKE/visible"; : > "$FAKE/calls"; : > "$FAKE/journal"
     echo 0 > "$FAKE/stations"
     echo "$1" > "$T/conf/wifi-mode"
+    echo "initialpass1" > "$T/conf/hotspot.psk"
 }
 cw() { sh "$T/car-wifi" "$@" > "$T/out" 2>&1; }
 cwi() { printf '%s
@@ -190,9 +195,9 @@ fresh auto
 for p in short "$(printf 'x%.0s' $(seq 1 64))" "caf$(printf '\303\251')1234" "tab$(printf '\t')12345"; do
     if cwi "$p"; then bad "password accepted an invalid value"; else ok "password rejects invalid value"; fi
 done
-check "password: invalid values change nothing" sh -c '[ ! -e "$CAR_WIFI_CONF_DIR/hotspot.psk" ] && ! grep -q "connection modify" "$FAKE/calls"'
+check "password: invalid values change nothing" sh -c '[ "$(cat "$CAR_WIFI_CONF_DIR/hotspot.psk")" = initialpass1 ] && ! grep -q "connection modify" "$FAKE/calls"'
 cwi "good pass 123"
-check "password: set updates the file (0600) and the profile" sh -c '[ "$(cat "$CAR_WIFI_CONF_DIR/hotspot.psk")" = "good pass 123" ] && [ "$(stat -c %a "$CAR_WIFI_CONF_DIR/hotspot.psk")" = 600 ] && grep -q "connection modify id car-hotspot 802-11-wireless-security.psk good pass 123" "$FAKE/calls"'
+check "password: set updates the file (0600), nmcli is not involved" sh -c '[ "$(cat "$CAR_WIFI_CONF_DIR/hotspot.psk")" = "good pass 123" ] && [ "$(stat -c %a "$CAR_WIFI_CONF_DIR/hotspot.psk")" = 600 ] && ! grep -q "connection modify" "$FAKE/calls"'
 cw password
 check "password: show prints it" sh -c '[ "$(cat "$0")" = "good pass 123" ]' "$T/out"
 rm -f "$CAR_WIFI_CONF_DIR/hotspot.psk"
@@ -224,7 +229,7 @@ fresh auto; printf '%s' car-hotspot > "$FAKE/active"; : > "$FAKE/calls"; cw home
 check "home: never tries the hotspot profile as home" sh -c '! grep -q "connection up id car-hotspot" "$FAKE/calls"'
 
 # 16. installer: install, idempotence, uninstall leaves the home profile
-fresh auto; rm -f "$T/conf/wifi-mode"; rmdir "$T/conf"
+fresh auto; rm -rf "$T/conf"
 grep -v "^car-hotspot:" "$FAKE/profiles" > "$FAKE/p.new"; mv "$FAKE/p.new" "$FAKE/profiles"
 export CAR_WIFI_ROOT="$T/root" CAR_WIFI_MAC=b8:27:eb:12:ab:cd
 sh "$SRC/deploy/wifi-setup.sh" > "$T/inst1" 2>&1 || { bad "installer failed: $(cat "$T/inst1")"; }
@@ -238,6 +243,7 @@ check "install: the unit runs the installed tool" grep -q "ExecStart=/usr/local/
 psk1=$(cat "$R/etc/car-scratch/hotspot.psk"); echo hotspot > "$R/etc/car-scratch/wifi-mode"
 sh "$SRC/deploy/wifi-setup.sh" > "$T/inst2" 2>&1 || bad "second install failed: $(cat "$T/inst2")"
 check "reinstall: idempotent (passphrase, mode kept; profile modified not duplicated)" sh -c '[ "$(cat "$0/etc/car-scratch/hotspot.psk")" = "$1" ] && [ "$(cat "$0/etc/car-scratch/wifi-mode")" = hotspot ] && [ "$(grep -c "^car-hotspot:" "$FAKE/profiles")" -eq 1 ] && grep -q "unchanged" "$2"' "$R" "$psk1" "$T/inst2"
+check "install/reinstall: psk-flags 2, and the passphrase on no command line at all" sh -c 'grep -q "802-11-wireless-security.psk-flags 2" "$FAKE/added" && grep -q "802-11-wireless-security.psk-flags 2" "$FAKE/modified" && ! grep -qF "$0" "$FAKE/calls" "$FAKE/added" "$FAKE/modified"' "$psk1"
 : > "$FAKE/calls"
 sh "$SRC/deploy/wifi-setup.sh" --uninstall > "$T/inst3" 2>&1 || bad "uninstall failed: $(cat "$T/inst3")"
 check "uninstall: everything it installed is gone" sh -c '[ ! -e "$0/usr/local/sbin/car-wifi" ] && [ ! -e "$0/etc/systemd/system/car-wifi.service" ] && [ ! -e "$0/etc/systemd/system/car-wifi-watch.timer" ] && [ ! -e "$0/etc/systemd/system/car-wifi-watch.service" ] && [ ! -e "$0/etc/car-scratch" ] && ! grep -q "^car-hotspot:" "$FAKE/profiles"' "$R"
@@ -247,5 +253,49 @@ sh "$SRC/deploy/wifi-setup.sh" > /dev/null 2>&1; : > "$FAKE/calls"
 sh "$SRC/deploy/wifi-setup.sh" --uninstall > /dev/null 2>&1
 check "uninstall while the hotspot is active: asks NM to reconnect wlan0" grep -q "device connect wlan0" "$FAKE/calls"
 unset CAR_WIFI_ROOT CAR_WIFI_MAC
+
+# 19. several saved profiles, names with spaces: the list must not be glued together
+two_profiles() {
+    printf '%s\n' "Home WiFi:802-11-wireless" "Backup net:802-11-wireless" "car-hotspot:802-11-wireless" > "$FAKE/profiles"
+    echo "Casa Chifor" > "$FAKE/ssid.Home WiFi"; echo "Other Net" > "$FAKE/ssid.Backup net"
+}
+fresh auto; two_profiles; printf '%s' car-hotspot > "$FAKE/active"; echo "Casa Chifor" > "$FAKE/visible"
+HOME_FAIL_PROFILE="Home WiFi" cw home
+check "home: first (visible) profile fails -> the second one, by its own name, is tried and active" sh -c '[ "$(cat "$FAKE/active")" = "Backup net" ] && grep -q "connection up id Home WiFi ifname wlan0" "$FAKE/calls" && grep -q "connection up id Backup net ifname wlan0" "$FAKE/calls" && ! grep -q "Home WiFiBackup" "$FAKE/calls"'
+fresh auto; two_profiles; printf '%s' car-hotspot > "$FAKE/active"; echo "Casa Chifor" > "$FAKE/visible"; cw home
+check "home: two profiles, visible one with a space in its name and SSID -> connected" sh -c '[ "$(cat "$FAKE/active")" = "Home WiFi" ]'
+
+# 20. backoff for a visible-but-unusable home network
+fresh auto; printf '%s' car-hotspot > "$FAKE/active"; echo CasaChifor > "$FAKE/visible"; export CAR_WIFI_NOW=1000
+HOME_NEVER_ACTIVE=1 cw watch
+check "backoff: first failed switch restores the hotspot" sh -c '[ "$(cat "$FAKE/active")" = car-hotspot ]'
+: > "$FAKE/calls"; CAR_WIFI_NOW=1300 cw watch
+check "backoff: 5 min later the profile is not retried (no teardown)" sh -c '! grep -Eq "connection (up|down)" "$FAKE/calls"'
+: > "$FAKE/calls"; CAR_WIFI_NOW=1601 HOME_NEVER_ACTIVE=1 cw watch
+check "backoff: after 10 min it is retried (and fails again)" sh -c 'grep -q "connection down id car-hotspot" "$FAKE/calls"'
+: > "$FAKE/calls"; CAR_WIFI_NOW=2700 cw watch
+check "backoff: the second interval is 20 min" sh -c '! grep -Eq "connection (up|down)" "$FAKE/calls"'
+: > "$FAKE/calls"; CAR_WIFI_NOW=2802 cw watch
+check "backoff: ...and is retried after it (success resets)" sh -c '[ "$(cat "$FAKE/active")" = netplan-wlan0-CasaChifor ]'
+check "backoff: success removes the state" sh -c '! ls "$CAR_WIFI_STATE_DIR" | grep -q "^backoff"'
+printf '%s' car-hotspot > "$FAKE/active"; : > "$FAKE/calls"; CAR_WIFI_NOW=2803 cw watch
+check "backoff: after a success the next switch is immediate again" sh -c '[ "$(cat "$FAKE/active")" = netplan-wlan0-CasaChifor ]'
+fresh auto; printf '%s' car-hotspot > "$FAKE/active"; echo CasaChifor > "$FAKE/visible"
+for t in 0 4000 8000 12000 16000; do : > "$FAKE/calls"; printf '%s' car-hotspot > "$FAKE/active"; CAR_WIFI_NOW=$((100000 + t)) HOME_NEVER_ACTIVE=1 cw watch; done
+check "backoff: the interval is capped at 1 h" sh -c '[ "$(cat "$CAR_WIFI_STATE_DIR"/backoff.* | cut -d" " -f2)" = 3600 ]'
+unset CAR_WIFI_NOW
+# a backed-off profile does not stop another visible profile
+fresh auto; two_profiles; printf '%s' car-hotspot > "$FAKE/active"; printf '%s\n' "Casa Chifor" "Other Net" > "$FAKE/visible"
+CAR_WIFI_NOW=500 HOME_FAIL_PROFILE="Home WiFi" cw watch
+: > "$FAKE/calls"; printf '%s' car-hotspot > "$FAKE/active"; CAR_WIFI_NOW=600 cw watch
+check "backoff: a backed-off profile is skipped for another visible one" sh -c '[ "$(cat "$FAKE/active")" = "Backup net" ]'
+
+# 21. the passphrase never appears on any (faked) command line, and still reaches NM
+fresh auto; : > "$FAKE/calls"
+cwi "s3cret pass 456"
+CAR_WIFI_NOW=1 cw hotspot
+check "passphrase: used for activation through the passwd-file" sh -c '[ "$(cat "$FAKE/passwd.seen")" = "802-11-wireless-security.psk:s3cret pass 456" ]'
+check "passphrase: never on an nmcli/iw/systemd-run command line" sh -c '! grep -rqF "s3cret" "$FAKE/calls" "$FAKE/journal"'
+check "passphrase: the temp passwd-file is removed" sh -c '! ls "$CAR_WIFI_STATE_DIR" | grep -q "^pw\."'
 
 if [ "$FAILS" -eq 0 ]; then echo "all wifi tests passed"; else echo "$FAILS wifi test(s) failed"; exit 1; fi
