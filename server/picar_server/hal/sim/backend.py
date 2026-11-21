@@ -20,7 +20,7 @@ RANGE_CM = 200.0
 RAY_ANGLES = (-15.0, -7.5, 0.0, 7.5, 15.0)
 MAX_INCIDENCE_DEG = 40.0   # an oblique wall reads "far" (the real sensor misses it)
 DIST_SIGMA_CM = 0.5
-LINE_ON_RAW, LINE_OFF_RAW = 100, 700
+LINE_ON_RAW, LINE_OFF_RAW = 420, 200      # real polarity: black line HIGH, white ground LOW (defaults: threshold 320)
 LIGHT_DARK_RAW = 200
 LIGHT_K = 100000.0
 

@@ -445,7 +445,7 @@ def test_snapshot_shape(rig):
 
 def test_snapshot_obstacle_flag_and_line_light(rig):
     from picar_server.hal.base import Sample
-    rig.ctl._on_sample(Sample(rig.clock(), 12.0, DIST_OK, [100, 700, 700, 700, 700], [20, 200, 200]))
+    rig.ctl._on_sample(Sample(rig.clock(), 12.0, DIST_OK, [700, 100, 100, 100, 100], [20, 200, 200]))
     t = rig.ctl.snapshot()
     assert t["obstacle"] is True
     assert t["line"]["on"] == [True, False, False, False, False] and t["line"]["pos"] == -2

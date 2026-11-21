@@ -119,9 +119,14 @@ def is_clear_sample(dist_state: str, dist_cm: Optional[float], margin: float, di
     return False
 
 
-def brightness(raw: float, cal: dict) -> int:
-    """Light module raw (lower = brighter) -> 0..100 (higher = brighter)."""
-    dark, bright = cal["light_dark"], cal["light_bright"]
+def per_sensor(value, i: int) -> float:
+    """Entry i of a calibration value that is either one number for every sensor or a list (one per sensor)."""
+    return value[i] if isinstance(value, (list, tuple)) else value
+
+
+def brightness(raw: float, cal: dict, i: int = 0) -> int:
+    """Light module raw (lower = brighter) -> 0..100 (higher = brighter). `i` = 0 left, 1 middle, 2 right."""
+    dark, bright = per_sensor(cal["light_dark"], i), per_sensor(cal["light_bright"], i)
     if dark == bright:
         return 0
     return int(round(clamp(100.0 * (dark - raw) / (dark - bright), 0, 100)))
@@ -137,8 +142,11 @@ def brightest(bright: Sequence[int]) -> str:
     return ("left", "middle", "right")[list(bright).index(top)]
 
 
-def line_on(raw: Sequence[int], threshold: float) -> list[bool]:
-    return [v < threshold for v in raw]
+def line_on(raw: Sequence[int], threshold, black_high: bool = True) -> list[bool]:
+    """Which sensors see the line. `threshold`: one number or one per sensor. A black line reads HIGH on this
+    module (`black_high`, measured): on = raw > threshold; otherwise on = raw < threshold."""
+    return [(v > per_sensor(threshold, i)) if black_high else (v < per_sensor(threshold, i))
+            for i, v in enumerate(raw)]
 
 
 def line_pos(on: Sequence[bool]) -> Optional[float]:

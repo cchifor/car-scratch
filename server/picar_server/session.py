@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import copy
 import itertools
 import json
 import logging
@@ -13,7 +12,7 @@ from typing import Callable, Optional
 
 from aiohttp import WSMsgType, web
 
-from . import protocol, safety
+from . import config, protocol, safety
 from .controller import CmdError, Controller
 from .hal.sim.backend import SimBackend
 from .hal.sim.world import DEFAULT_WORLD, WORLD_DIR, WorldError, list_worlds, load_world
@@ -295,7 +294,7 @@ class Session:
     # ---- sim controller ------------------------------------------------------------------------------
     def _make_sim(self, world_id: Optional[str]) -> Controller:
         world = load_world(world_id or DEFAULT_WORLD, self.hub.world_dir)
-        cal = copy.deepcopy(self.hub.cal)
+        cal = config.sim_calibration(self.hub.cal)
         sim = Controller(SimBackend(world, cal), cal, shared=False, on_event=self._sim_event, on_done=self._sim_done)
         sim.start()
         self.world_id = world.id

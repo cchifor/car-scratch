@@ -69,7 +69,8 @@ def test_steer_light_and_line_helpers():
     assert safety.brightness(200, CAL) == 0 and safety.brightness(20, CAL) == 100 and safety.brightness(110, CAL) == 50
     assert safety.brightest([10, 60, 30]) == "middle" and safety.brightest([60, 10, 30]) == "left"
     assert safety.brightest([1, 2, 3]) == "none"
-    assert safety.line_on([100, 500, 299, 300, 700], 300) == [True, False, True, False, False]
+    assert safety.line_on([700, 100, 301, 300, 100], 300) == [True, False, True, False, False]   # black = HIGH
+    assert safety.line_on([100, 500, 299, 300, 700], 300, black_high=False) == [True, False, True, False, False]
     assert safety.line_pos([False, False, True, False, False]) == 0
     assert safety.line_pos([True, True, False, False, False]) == -1.5
     assert safety.line_pos([False] * 5) is None

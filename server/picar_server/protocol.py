@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urlsplit
 
-from . import safety
+from . import config, safety
 
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 4096
@@ -46,7 +46,12 @@ class ProtocolError(Exception):
 
 
 def _is_num(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:                   # an integer too large for a float
+        return False
 
 
 def _num(msg: dict, key: str, cmd_id=None, required=True) -> Optional[float]:
@@ -131,6 +136,21 @@ def validate_cmd(msg: dict) -> tuple[int, str, dict]:
     elif op == "calibrate":
         if "steer_trim_deg" in msg:
             f["steer_trim_deg"] = safety.clamp(float(_num(msg, "steer_trim_deg", cid)), -20.0, 20.0)
+        if "light_channels" in msg:
+            if not config.valid_light_channels(msg["light_channels"]):
+                raise ProtocolError("bad_request", "light_channels must be 3 distinct integers 0..3 (left, middle, right)", cid)
+            f["light_channels"] = list(msg["light_channels"])
+        for key, n, hi in (("light_dark", config.LIGHT_SENSORS, config.LIGHT_RAW_MAX),
+                           ("light_bright", config.LIGHT_SENSORS, config.LIGHT_RAW_MAX),
+                           ("line_threshold", config.LINE_SENSORS, config.LINE_RAW_MAX)):
+            if key in msg:
+                if not config.valid_per_sensor(msg[key], n, 0, hi):
+                    raise ProtocolError("bad_request", f"{key} must be a number or a list of {n} numbers, 0..{hi}", cid)
+                f[key] = list(msg[key]) if isinstance(msg[key], list) else msg[key]
+        if "line_black_high" in msg:
+            if not isinstance(msg["line_black_high"], bool):
+                raise ProtocolError("bad_request", "line_black_high must be a boolean", cid)
+            f["line_black_high"] = msg["line_black_high"]
         if "save" in msg:
             if not isinstance(msg["save"], bool):
                 raise ProtocolError("bad_request", "save must be a boolean", cid)

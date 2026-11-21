@@ -25,6 +25,12 @@ on the car itself.
   adds the coasting distance to your stop distance, so a fast car stops a lot further out.
 - The car also stops when its sensor reads a fault (for example, it cannot get an echo three times in a
   row). A fault is treated as "something is there".
+- The line follower (when enabled) is read while the car moves, under guards that switch the reads off at the
+  first sign of trouble. A healthy read adds about 3 ms (up to about 10 ms with a retry and the light read) before
+  the obstacle guard and before a loop-thread stop gets the bus lock. A stalled I2C bus blocks any motor write, up
+  to the adapter timeout and the existing `hw_fault` and watchdog layers; the light sensor read has always
+  carried the same risk. A slow call is never retried and switches the line reads off, so the line follower adds
+  at most one stalled call per drive. See D4 in [decisions.md](decisions.md).
 - You can switch the obstacle stop off with a block. While it is off, the screen shows a permanent
   warning and you are responsible for stopping the car.
 

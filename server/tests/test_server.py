@@ -744,3 +744,16 @@ async def test_projects_unsafe_methods_check_origin_and_host(srv):
     assert (await srv.put("/api/projects/a.sb3", data=sb3, headers={"Origin": f"http://127.0.0.1:{srv.port}"})).status == 200
     assert (await srv.delete("/api/projects/a.sb3", headers={"Origin": "http://evil.example"})).status == 403
     assert (await srv.delete("/api/projects/a.sb3")).status == 200
+
+
+async def test_sim_session_ignores_the_cars_sensor_calibration(srv):
+    cal = srv.app["hub"].cal
+    cal.update(light_dark=[88, 250, 252], light_bright=[3, 19, 19], light_channels=[0, 2, 1],
+               line_threshold=[300, 310, 320, 330, 340], line_black_high=False, wheelbase_cm=9.5)
+    a, _ = await hello(srv, mode="sim", world="oval")
+    t = await a.until(lambda d: d["t"] == "tel" and d["line"]["ok"])
+    assert t["light"]["bright"] == [0, 0, 0]                        # the idealised dark 200, not the car's levels
+    assert t["line"]["on"] == [False, False, True, False, False]    # default polarity and threshold
+    from picar_server import config
+    sim_cal = config.sim_calibration(cal)
+    assert sim_cal["wheelbase_cm"] == 9.5 and sim_cal["light_dark"] == 200 and sim_cal["line_threshold"] == 320

@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import copy
 import logging
 import math
 import threading
 import time
 from typing import Any, Callable, Optional
 
-from . import safety
+from . import config, safety
 from .hal.base import DIST_FAR, DIST_FAULT, DIST_NONE, DIST_OK, HardwareFault, Sample
 from .power import sim_power
 
@@ -32,6 +33,9 @@ class CmdError(Exception):
 
 
 _ANY = object()   # _defer target: "whatever move is current when the loop drains" (loop-thread stops)
+SENSOR_CAL_KEYS = config.SENSOR_KEYS
+LINE_FAULT_AFTER = 3     # consecutive samples without a line frame before a sensor_fault event
+LINE_HOLD_S = 0.1        # telemetry repeats the last line frame this long, only for a single skipped frame
 
 
 class _Move:
@@ -89,6 +93,8 @@ class Controller:
         self._last_ok: Optional[tuple[float, float]] = None   # (cm, time) of the latest ok sample, cleared by a far one
         self._us_fault = False
         self._line_ok: Optional[bool] = None
+        self._line_none_run = 0               # consecutive samples without a line frame (a single skipped frame is not a fault)
+        self._line_last: Optional[tuple[list, float]] = None   # (raw, time) of the latest line frame
         self._pose = [0.0, 0.0, 90.0]
         self.motor_s = 0.0                    # seconds any rear-motor duty was non-zero (loop thread)
         self._t0 = now                        # a sim session's power.on_s counts from its start
@@ -525,12 +531,21 @@ class Controller:
                 self._latch_hw_fault(f"steering write failed: {e}")
                 self._halt("hw_fault")
                 raise CmdError("hw_fault", f"steering write failed: {e}")
+        previous = {k: copy.deepcopy(self.cal[k]) for k in SENSOR_CAL_KEYS if k in f}
+        for key in previous:                 # the sensor thread reads these live through its calibration getters
+            v = f[key]
+            self.cal[key] = list(v) if isinstance(v, list) else v
         if f.get("save") and self._save_cal:
             try:
                 self._save_cal(self.cal)
             except OSError as e:
+                self.cal.update(previous)    # not saved: do not leave the new sensor values applied either
                 raise CmdError("hw_fault", f"could not save calibration: {e}")
-        return {"steer_trim_deg": self.cal["steer_trim_deg"]}
+        out = {"steer_trim_deg": self.cal["steer_trim_deg"]}
+        out.update({k: self.cal[k] for k in previous})
+        if previous:
+            out["previous"] = previous       # what these keys were before this command (a client can restore them)
+        return out
 
     # ---- safety entry points (loop thread) ------------------------------------------------------
     def estop(self, by: str) -> None:
@@ -618,13 +633,20 @@ class Controller:
             if fault_now != self._us_fault:
                 self._us_fault = fault_now
                 events.append(("sensor_fault" if fault_now else "sensor_ok", {"sensor": "ultrasonic"}))
-            line_ok = s.line_raw is not None
-            if self._line_ok is not None and line_ok != self._line_ok:
-                events.append(("sensor_ok" if line_ok else "sensor_fault", {"sensor": "line"}))
-            if self._line_ok is None:
-                self._line_ok = True if line_ok else None
+            if s.line_raw is not None:
+                self._line_none_run = 0
+                self._line_last = (list(s.line_raw), now)
+                line_ok = True
             else:
-                self._line_ok = line_ok
+                self._line_none_run += 1
+                line_ok = False if self._line_none_run >= LINE_FAULT_AFTER else self._line_ok
+            if line_ok is not None:
+                if self._line_ok is None:
+                    self._line_ok = True if line_ok else None     # a module that was never seen is not a fault
+                else:
+                    if line_ok != self._line_ok:
+                        events.append(("sensor_ok" if line_ok else "sensor_fault", {"sensor": "line"}))
+                    self._line_ok = line_ok
             stale = self._last_good_t is None or now - self._last_good_t > safety.SENSOR_STALE_S
         reason = safety.guard_decision(s.dist_state, s.dist_cm, margin, moving_forward=forward,
                                        distance_guard=distance_guard, stale=stale)
@@ -774,12 +796,16 @@ class Controller:
                     "state": s.dist_state}
         margin = self._margin(self._eff if moving else self._speed_setting)
         line = {"ok": False, "raw": None, "on": None, "pos": None}
-        if s is not None and s.line_raw is not None and now - sample_at <= 1.0:
-            on = safety.line_on(s.line_raw, self.cal["line_threshold"])
-            line = {"ok": True, "raw": list(s.line_raw), "on": on, "pos": safety.line_pos(on)}
+        line_raw = s.line_raw if s is not None else None
+        if (line_raw is None and s is not None and s.line_skipped and self._line_last
+                and now - self._line_last[1] <= LINE_HOLD_S):
+            line_raw = self._line_last[0]            # bridges one skipped frame; never a suppressed or failed module
+        if line_raw is not None and now - sample_at <= 1.0:
+            on = safety.line_on(line_raw, self.cal["line_threshold"], self.cal["line_black_high"])
+            line = {"ok": True, "raw": list(line_raw), "on": on, "pos": safety.line_pos(on)}
         light = {"ok": False, "raw": None, "bright": None, "max": "none"}
         if s is not None and s.light_raw is not None and now - sample_at <= 1.0:
-            bright = [safety.brightness(v, self.cal) for v in s.light_raw]
+            bright = [safety.brightness(v, self.cal, i) for i, v in enumerate(s.light_raw)]
             light = {"ok": True, "raw": list(s.light_raw), "bright": bright, "max": safety.brightest(bright)}
         (x, y, d), src = self.pose()
         mv = self._move

@@ -95,12 +95,12 @@ def test_ultrasonic_far_beyond_range_and_on_oblique_walls():
 def test_line_sensors_on_the_oval_track():
     b = sim("oval")
     raw = b.read_line()
-    assert [v < 300 for v in raw] == [False, False, True, False, False]
+    assert [v > 320 for v in raw] == [False, False, True, False, False]
     b.teleport(0, 0, 90)
-    assert all(v > 600 for v in b.read_line())
+    assert all(v < 250 for v in b.read_line())
     c = sim("corridor")
     c.teleport(0, 0, 90)                                 # the line runs along the corridor axis
-    assert [v < 300 for v in c.read_line()][2]
+    assert [v > 320 for v in c.read_line()][2]
 
 
 def test_light_is_lower_raw_when_closer_and_blocked_by_walls():
