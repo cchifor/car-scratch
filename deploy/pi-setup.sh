@@ -13,7 +13,7 @@ HOME_DIR=$(getent passwd "$CAR_USER" | cut -d: -f6)
 
 # 1. packages (the server runs on apt packages only)
 MISSING=""
-for p in python3-aiohttp python3-smbus2 rsync; do
+for p in python3-aiohttp python3-rich python3-smbus2 rsync; do
     dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"
 done
 if [ -n "$MISSING" ]; then
@@ -129,6 +129,16 @@ fi
 if ! systemctl is-enabled car-safe-stop.service >/dev/null 2>&1; then
     systemctl enable car-safe-stop.service >/dev/null 2>&1
     note "enabled car-safe-stop.service"
+fi
+
+# 6b. `carctl` (terminal dashboard + keyboard driving, docs/carctl.md): a root-owned launcher that runs the
+#     deployed copy as the calling user. ssh -t c4@picar.local carctl
+if write_file /usr/local/bin/carctl 0755 <<CONF
+#!/bin/sh
+PYTHONPATH=$HOME_DIR/car-scratch/current/server exec python3 -m tools.carctl "\$@"
+CONF
+then
+    note "installed /usr/local/bin/carctl (root-owned)"
 fi
 
 # 7. hardware access groups (informational)

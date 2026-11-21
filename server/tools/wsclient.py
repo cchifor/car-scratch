@@ -38,9 +38,12 @@ def summarize_tel(t: dict) -> str:
 class Client:
     """One WebSocket session: hello, heartbeats, telemetry, ack/done tracking."""
 
-    def __init__(self, url: str, want: str = "control", client_id: Optional[str] = None, quiet: bool = False):
+    def __init__(self, url: str, want: str = "control", client_id: Optional[str] = None, quiet: bool = False,
+                 mode: str = "car", world: Optional[str] = None, on_event=None, on_error=None):
         host = re.sub(r"[^A-Za-z0-9_-]", "", socket.gethostname())[:40] or "host"
         self.url, self.want, self.quiet = url, want, quiet
+        self.mode, self.world = mode, world
+        self.on_event, self.on_error = on_event, on_error      # optional callbacks(msg) for event / unmatched err
         self.client_id = client_id or f"wsclient-{host}"        # stable: a re-run regains control within the lease
         self.welcome: dict = {}
         self.tel: Optional[dict] = None
@@ -63,7 +66,8 @@ class Client:
         try:
             self._ws = await self._session.ws_connect(self.url, heartbeat=5)
             await self._ws.send_json({"t": "hello", "v": 1, "client_id": self.client_id,
-                                      "want": self.want, "mode": "car"})
+                                      "want": self.want, "mode": self.mode,
+                                      **({"world": self.world} if self.world else {})})
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), 5)
                 if msg.type != aiohttp.WSMsgType.TEXT:
@@ -105,6 +109,8 @@ class Client:
                 elif t in ("ack", "err") and m.get("id") in self._replies:
                     self._replies.pop(m["id"]).set_result(m)
                 elif t == "err":
+                    if self.on_error:
+                        self.on_error(m)
                     self.log(f"ERR {m.get('code')}: {m.get('msg')}")
                 elif t == "done" and m.get("id") in self._done:
                     self._done.pop(m["id"]).set_result(m)
@@ -112,6 +118,8 @@ class Client:
                     self.role = m.get("role", self.role)
                     self.log(f"role -> {self.role}")
                 elif t == "event":
+                    if self.on_event:
+                        self.on_event(m)
                     self.log("event " + json.dumps({k: v for k, v in m.items() if k != "t"}))
         finally:
             self.closed.set()
@@ -143,6 +151,10 @@ class Client:
         except asyncio.TimeoutError:
             pass
         return self.tel
+
+    @property
+    def close_code(self) -> Optional[int]:
+        return self._ws.close_code if self._ws is not None else None
 
     async def close(self, stop: bool = True) -> None:
         """Send `stop` first (when controlling), then close."""
