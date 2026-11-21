@@ -363,8 +363,9 @@ neither.
 **Gotchas.**
 
 - Lock order: motor lock (outer), then the I2C bus lock (inner), never the other way round.
-- An echo is `far` only when it ends between 12 and 40 ms; still high at 40 ms is "no answer". A ping whose
-  busy-wait loop saw a gap over 1 ms is discarded. Walls hit at an angle can read `far` (see
+- An echo is `far` only when it ends between 12 and 40 ms. Still high at 40 ms means the module is in its long
+  no-echo cycle (`BUSY`, decision D5): it is not re-triggered until the line drops, and a line high for over 0.6 s
+  is "no answer". A ping whose busy-wait loop saw a gap over 1 ms is discarded. Walls hit at an angle can read `far` (see
   [safety.md](safety.md)).
 - The line follower is off by default (`line_enabled: false`). While the car moves it is read only when the module
   has answered 10 times in a row, and the reads stay off until the next stop after an error, two invalid frames or

@@ -109,9 +109,12 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
   `ticks = round((600 + 1800 * angle / 180) / 1e6 * 60 * 4096)` (90° → 369).
 - Ultrasonic: single SIG pin GPIO5 (output-low 2 ms, high 10 µs, low, switch to input, time the echo).
   Echo-start timeout 30 ms → no answer. Echo that ends after 12 ms but before 40 ms → `far` (> ~2 m).
-  Echo still high at 40 ms → no answer (stuck line — never treated as `far`).
+  Echo still high at 40 ms → the module is **busy** (never treated as `far`): no new trigger while the line is
+  high (the module ignores triggers, and driving the pin low would fight its output); still high after 0.6 s →
+  no answer (stuck line). See decision D5.
   Median of 3 pings when the last reading was < the near hint or the car moves forward; else 1 ping.
-  A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`.
+  A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`. A busy sample is `none` but does
+  not count toward the fault, unless there has been no `ok`/`far` reading for 1.5 s.
 - PCF8591: for each input `ch` in `light_channels` (left, middle, right; default 0, 1, 2):
   `write_byte(0x48, 0x40|ch)`, discard one read, then read. `light_raw` is ordered left, middle, right.
 - Line follower: `read_i2c_block_data(0x11, 0, 10)` → 5 big-endian 16-bit values. A frame with any value

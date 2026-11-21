@@ -20,7 +20,9 @@ PCF_ADDR = 0x48
 LINE_ADDR = 0x11
 ECHO_START_TIMEOUT_S = 0.030     # no rising edge within 30 ms: no answer
 ECHO_FAR_S = 0.012               # echo ending after 12 ms (and before 40 ms): nothing within ~2 m
-ECHO_STUCK_S = 0.040             # echo still high at 40 ms: stuck line, no answer (never "far")
+ECHO_STUCK_S = 0.040             # echo still high at 40 ms: the module's long cycle (BUSY) or a stuck line, never "far"
+BUSY_CYCLE_MAX_S = 0.6           # the long cycle holds the line high 401.5 ms (measured); longer than this = stuck line
+NO_ANSWER_FAULT_S = 1.5          # BUSY for this long without one ok/far reading counts toward the fault as well
 MAX_GAP_S = 0.001                # a busy-wait iteration gap above this (GIL / scheduler) discards the ping
 FAR = 999.0
 FAULT_AFTER = 3                  # consecutive "none" samples
@@ -33,6 +35,17 @@ LINE_ABSENT_AFTER = 3           # consecutive invalid samples (two bad frames ea
 DEFAULT_LIGHT_CHANNELS = (0, 1, 2)
 
 
+class _Busy:
+    def __repr__(self) -> str:
+        return "BUSY"
+
+
+# ping() / measure(): the module is in its long no-echo cycle. Measured on the car (2026-11-21): against a weak
+# reflector about one ping in 15 the module holds the line high for 401.5 ms instead of its usual 27 ms no-echo
+# timeout, and ignores triggers until that cycle ends. No reading, but not evidence of a fault.
+BUSY = _Busy()
+
+
 class SystemClock:
     monotonic = staticmethod(time.monotonic)
     sleep = staticmethod(time.sleep)
@@ -41,11 +54,20 @@ class SystemClock:
 class Ultrasonic:
     def __init__(self, gpio, clock, pin: int = US_PIN):
         self.gpio, self.clock, self.pin = gpio, clock, pin
+        self._busy_since: Optional[float] = None   # start of an echo still high at ECHO_STUCK_S (pin left as input)
 
-    def ping(self) -> Optional[float]:
-        """cm, FAR for an echo ending between 12 and 40 ms, None for no valid ping (no echo, stuck high, or a
-        busy-wait gap above 1 ms, which makes the timing untrustworthy)."""
+    def ping(self):
+        """cm; FAR for an echo ending between 12 and 40 ms; BUSY while the module is in its long no-echo cycle;
+        None for no valid ping (no echo, a line high for longer than any module cycle, or a busy-wait gap above
+        1 ms while the echo is high, which makes the timing untrustworthy)."""
         g, c, p = self.gpio, self.clock, self.pin
+        if self._busy_since is not None:
+            # Never trigger while the module holds the line high: it ignores triggers until its cycle ends, and
+            # driving the pin low would fight the module's output. Report busy until the line drops; a line high
+            # for longer than any module cycle is stuck (None, which counts toward the fault).
+            if g.input(p) == 1:
+                return BUSY if c.monotonic() - self._busy_since <= BUSY_CYCLE_MAX_S else None
+            self._busy_since = None
         g.setup(p, g.OUT, initial=g.LOW)
         c.sleep(0.002)
         g.output(p, 1)
@@ -69,7 +91,8 @@ class Ultrasonic:
             if not high:
                 break
             if now - start > ECHO_STUCK_S:
-                return None
+                self._busy_since = start       # the pin stays an input; the next ping checks the line first
+                return BUSY
         dur = now - start
         if gap:
             return None
@@ -77,10 +100,18 @@ class Ultrasonic:
             return FAR
         return dur * 34300 / 2
 
-    def measure(self, n: int) -> Optional[float]:
-        """Median of n pings (needs 2 valid when n == 3); None = no valid ping."""
-        vals = [v for v in (self.ping() for _ in range(n)) if v is not None]
-        if len(vals) < (2 if n >= 3 else 1):
+    def measure(self, n: int):
+        """Median of n pings (needs 2 valid when n == 3); BUSY when the module went into its long cycle before
+        enough valid pings (later pings would only see it busy); None = no valid ping."""
+        need = 2 if n >= 3 else 1
+        vals: list[float] = []
+        for _ in range(n):
+            v = self.ping()
+            if v is BUSY:
+                return statistics.median(vals) if len(vals) >= need else BUSY
+            if v is not None:
+                vals.append(v)
+        if len(vals) < need:
             return None
         return statistics.median(vals)
 
@@ -96,6 +127,7 @@ class SensorHub:
         self.us = Ultrasonic(gpio, clock, us_pin)
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
+        self._last_answer_t = clock.monotonic()    # last ok/far reading (or start): bounds how long BUSY is tolerated
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -126,11 +158,19 @@ class SensorHub:
         forward = l > 0 or r > 0
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
+        if v is BUSY:
+            if self.clock.monotonic() - self._last_answer_t <= NO_ANSWER_FAULT_S:
+                # The module's long no-echo cycle: no reading this sample, not a fault. It neither counts toward
+                # FAULT_AFTER nor resets it, and keeps the near/far memory. (Forward motion still needs a fresh
+                # ok/far reading: the controller's staleness rule is unchanged.)
+                return None, DIST_NONE if self._nones < FAULT_AFTER else DIST_FAULT
+            v = None                                       # busy for too long without an answer: counts as none
         if v is None:
             self._nones += 1
             self._last_cm, self._last_far = None, False
             return None, DIST_FAULT if self._nones >= FAULT_AFTER else DIST_NONE
         self._nones = 0
+        self._last_answer_t = self.clock.monotonic()
         if v >= FAR:
             self._last_cm, self._last_far = None, True
             return None, DIST_FAR

@@ -3,6 +3,7 @@ import logging
 
 from fakes_hw import FakeBus, FakeClock, FakeGPIO
 from picar_server.hal.real import RealBackend
+from picar_server.hal.sensors import BUSY
 
 
 def make(cal=None):
@@ -60,12 +61,65 @@ def test_far_when_echo_ends_between_12_and_40ms():
     assert gpio.pings - p == 1                           # far and stationary: one ping
 
 
-def test_echo_still_high_at_40ms_is_no_answer_never_far():
+def test_echo_still_high_at_40ms_is_busy_never_far():
     b, bus, gpio, _ = make()
-    gpio.default = (0.0005, 0.100)                       # stuck line
-    assert b.hub.us.ping() is None
+    gpio.default = (0.0005, 0.100)
+    assert b.hub.us.ping() is BUSY
     s = b.hub.read()
     assert s.dist_state == "none" and s.dist_cm is None
+
+
+def _read_for(b, clock, seconds, period=0.04):
+    """Samples at the sensor thread's cadence (40 ms) for `seconds` of fake time."""
+    states, t_end = [], clock.now + seconds
+    while clock.now < t_end:
+        t0 = clock.now
+        states.append(b.hub.read().dist_state)
+        clock.advance(max(0.0, period - (clock.now - t0)))
+    return states
+
+
+def test_module_long_cycle_is_busy_not_a_fault():
+    # Measured on the car: against a weak reflector about one ping in 15 makes the module hold the line high for
+    # 401.5 ms (instead of its usual 27 ms no-echo timeout), ignoring triggers. That is a healthy module.
+    b, bus, gpio, clock = make()
+    far = (0.0003, 0.027)
+    gpio.default = far
+    assert _read_for(b, clock, 0.2)[-1] == "far"
+    gpio.queue(gpio.long_cycle())
+    states = _read_for(b, clock, 0.6)
+    assert "fault" not in states
+    assert "none" in states and states[-1] == "far"       # no reading during the cycle, then normal again
+    assert gpio.contention == 0                           # never drove the line low against the module
+
+
+def test_busy_module_is_not_retriggered():
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.027)
+    gpio.queue(gpio.long_cycle())
+    b.hub.read()
+    pings, writes = gpio.pings, len(gpio.writes_to(5))
+    clock.advance(0.1)
+    assert b.hub.us.ping() is BUSY
+    assert gpio.pings == pings and len(gpio.writes_to(5)) == writes
+
+
+def test_line_high_beyond_the_module_cycle_is_a_fault():
+    b, bus, gpio, clock = make()
+    gpio.default = (0.0003, 0.027)
+    gpio.queue(gpio.long_cycle(width=5.0))               # stuck high: far longer than any module cycle
+    states = _read_for(b, clock, 1.0)
+    assert states[-1] == "fault"
+    assert "fault" not in states[:10]                     # not before the module's cycle could have ended
+    assert gpio.contention == 0                           # a stuck-high line is never driven against either
+
+
+def test_module_that_only_answers_with_long_cycles_becomes_a_fault():
+    b, bus, gpio, clock = make()
+    gpio.default = gpio.long_cycle()                     # every ping: a long cycle, never a reading
+    states = _read_for(b, clock, 2.5)
+    assert states[-1] == "fault"
+    assert gpio.contention == 0
 
 
 def test_none_samples_then_fault_after_three_consecutive():

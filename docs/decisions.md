@@ -103,3 +103,36 @@ timeout and by the existing layers behind it (the `hw_fault` latch when the moto
 systemd and hardware watchdogs). A slow call is never retried and switches moving reads off, so the line
 follower adds at most one stalled call before it is off for that drive. The owner can turn the feature off with
 `line_enabled: false`.
+
+## D5 — Ultrasonic long no-echo cycle is "busy", not a fault (2026-11-21)
+
+**Symptom.** `sensor_fault` / `sensor_ok` for the ultrasonic flapped about once a second (45 to 54 times a
+minute) while the car stood still facing a weak reflector about 110 cm away.
+
+**Measured on the car (2026-11-21).**
+
+- A passive observer read GPIO5 through `/dev/gpiomem` (never claiming the pin) while the server ran. In that pose
+  most echoes were the module's normal no-echo timeout (27 ms, reported `far`), a few were real (6 ms, ~105 cm),
+  and 56 of 204 pulses were 40.2 to 49 ms: the server cutting them at its 40 ms limit.
+- With the server stopped and pulses never cut: about one ping in 15 (8 of 120) the module holds the line high for
+  a fixed **401.5 ms** instead of 27 ms, ignoring triggers meanwhile, then answers normally. Two such cycles back to
+  back occur. More rest between pings did not prevent it (2 to 60 ms tried).
+- The old code cut the pulse at 40 ms, returned "no answer", and re-triggered: about 9 failed pings during one
+  cycle, three `none` samples, so `fault`, then `ok` when the cycle ended. Each re-trigger also drove the pin low
+  for 2 ms against the module's high output.
+
+**Decision.**
+
+1. An echo still high at 40 ms is `BUSY` (the module's long cycle), never `far`. While the line stays high the
+   pin is not driven and not re-triggered.
+2. A busy sample is `none` and does not count toward the 3-sample fault, unless there has been no `ok`/`far` reading
+   for 1.5 s (about three cycles). A line high for longer than 0.6 s (one cycle is 401.5 ms) is a stuck line and
+   counts as "no answer" as before.
+3. Motion safety is unchanged: forward motion still needs an `ok`/`far` sample younger than 150 ms to start or to
+   continue. During a busy cycle a forward drive is therefore refused or stopped; only the false fault flag and
+   its events are gone.
+
+**Residual.** Driving forward toward a weak reflector can still stop the car when the module goes into its long
+cycle (no fresh reading for 150 ms). Accepting "busy" as clear for up to one cycle while moving would remove those
+stops at the cost of up to ~0.4 s without distance data (about 10 cm at full speed); that is an owner decision and
+is not made here.
