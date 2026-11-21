@@ -10,6 +10,7 @@ def build():
     p, car = new_project("Obstacle stop: press the green flag", car_x=-80)
     car.script(
         -200, 60, when_flag(),
+        steer("straight"),
         stop_distance(25),
         say("Driving until I see a wall."),
         drive("forward", 40),

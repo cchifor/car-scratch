@@ -9,6 +9,7 @@ def build():
     p, car = new_project("Hello car: press the green flag", car_x=-60)
     car.script(
         -200, 60, when_flag(),
+        steer("straight"),
         say("Here I go!"),
         drive_for("forward", 40, 1),
         say("Wiggle left..."),
