@@ -278,5 +278,19 @@ The only exception is `far` when the rise and the first 12 ms were watched witho
 it for every stall position, three stall lengths and three pulse patterns (an echo hidden before a second high pulse
 or a long cycle): the hidden echo always surfaces as an echo no farther than it was, and never as "nothing there".
 
+**Eighth round** confirmed the stall rule (healthy pings classified exactly as before over 13,479 comparisons) and
+found that a pause under the 1 ms stall threshold right at an echo's end made the distance read too far (46 cm for
+34 cm). The end of an echo is now timed from the last read that saw the line high, so a reading is never farther
+than the truth (normally under 1 cm closer).
+
+**Residual: a dip shorter than the polling can see.** The same round showed that a sensor whose output ends an echo
+and goes high again within a fraction of a millisecond could hide that echo from any polling loop. Measured on the
+car (passive observer, 8 minutes, about 20,300 pings at microsecond resolution): 1.9 % of pings have two pulses, and
+the pattern is always a 0.2 to 0.7 ms glitch (it would be an object at 3 to 12 cm), a 0.06 to 0.2 ms dip, then the
+real echo (median end 6.4 ms, about 1.1 m); the first pulse rises 416 us after the trigger like any echo. That is
+the reverse of the hazard (a glitch before the real echo, not a stray pulse after a real one). When the polling sees
+the dip it reads a false echo at about 8 cm, which is the safe direction: it only disables the D7/D8 trust for a
+second. Not chased further.
+
 **Residual.** As D7: something that moves toward the car while it drives on an echo-based bound is seen only at the
 next reading.

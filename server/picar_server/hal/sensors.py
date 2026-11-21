@@ -130,13 +130,15 @@ class Ultrasonic:
                 else:
                     self.busy_started = True   # 40 ms without an echo, watched throughout: "nothing there"
                 return BUSY
-        dur = now - start
         if stalled:
             if rise_clean and clean_high is not None and clean_high - start > ECHO_FAR_S:
                 return FAR                     # watched from the rise past 12 ms: no echo ended within range
             self._lost_echo(rise_clean, clean_high, start)
             self.discards["gap"] += 1
             return None
+        # The echo ended after the last read that saw it high (clean_high) and at or before this one: time it from
+        # clean_high, the lower bound, so a pause right at the fall can only make the reading closer, never farther.
+        dur = 0.0 if clean_high is None else max(0.0, clean_high - start)
         if dur > ECHO_FAR_S:
             return FAR
         return dur * 34300 / 2

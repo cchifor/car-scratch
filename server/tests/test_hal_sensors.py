@@ -8,6 +8,11 @@ from picar_server.hal.real import RealBackend
 from picar_server.hal.sensors import BUSY, FAR
 
 
+def near(v, cm):
+    """Echo timing uses the last read that saw the line high: never farther than the truth, at most ~1 cm closer."""
+    return cm - 1.0 <= v <= cm + 0.1
+
+
 def make(cal=None):
     clock = FakeClock()
     bus, gpio = FakeBus(), FakeGPIO(clock)
@@ -20,7 +25,7 @@ def test_ok_reading_is_median_of_three_when_unknown():
     gpio.queue(gpio.echo_cm(50), gpio.echo_cm(200), gpio.echo_cm(60))
     s = b.hub.read()
     assert gpio.pings == 3
-    assert s.dist_state == "ok" and abs(s.dist_cm - 60) < 0.5
+    assert s.dist_state == "ok" and near(s.dist_cm, 60)
 
 
 def test_ping_sequence_on_the_wire():
@@ -141,7 +146,7 @@ def test_after_a_busy_cycle_the_next_sample_takes_three_pings():
         clock.advance(0.04)
     gpio.queue(far, gpio.echo_cm(10), gpio.echo_cm(10))     # obstacle now at 10 cm; the first ping misses it
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
+    assert s.dist_state == "ok" and near(s.dist_cm, 10)
 
 
 def test_two_valid_pings_never_average_with_far():
@@ -150,7 +155,7 @@ def test_two_valid_pings_never_average_with_far():
     far = (0.0003, 0.027)
     gpio.queue(None, far, gpio.echo_cm(10))
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
+    assert s.dist_state == "ok" and near(s.dist_cm, 10)
 
 
 def test_valid_pings_then_busy_never_average_with_far():
@@ -158,7 +163,7 @@ def test_valid_pings_then_busy_never_average_with_far():
     far = (0.0003, 0.027)
     gpio.queue(far, gpio.echo_cm(10), gpio.long_cycle())
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
+    assert s.dist_state == "ok" and near(s.dist_cm, 10)
 
 
 def test_far_sample_is_a_no_echo_observation():
@@ -187,7 +192,7 @@ def test_any_echo_heard_cancels_the_no_echo_observation():
     far = (0.0003, 0.027)
     gpio.queue(far, gpio.echo_cm(50), gpio.long_cycle())         # far, an echo at 50 cm, then the module goes busy
     s = b.hub.read()
-    assert s.clear_t is None and abs(s.echo_cm - 50) < 0.5
+    assert s.clear_t is None and near(s.echo_cm, 50)
     gpio.queue(gpio.echo_cm(40))
     clock.advance(1.0)
 
@@ -282,6 +287,16 @@ def test_a_hidden_echo_always_surfaces_as_an_echo_no_farther_than_it_was(pattern
         assert s.clear_t is None, (pattern, gap_s, at, s)
 
 
+def test_a_pause_at_the_echos_end_never_reads_farther():
+    # Eighth review: a 0.8 ms pause (under the 1 ms stall threshold) right at the fall read a 34.3 cm echo as 46 cm.
+    for at in range(1, 160):
+        b, bus, gpio, clock = make()
+        gpio.default = (0.0003, 0.0020)
+        clock.gap_after(at, 0.0008)
+        v = b.hub.us.ping()
+        assert v is None or v <= HIDDEN_CM + 0.1, (at, v)
+
+
 def test_echo_time_is_the_start_of_the_samples_pings():
     b, bus, gpio, clock = make()
     gpio.queue(gpio.echo_cm(50), gpio.echo_cm(50), gpio.echo_cm(50))
@@ -324,7 +339,7 @@ def test_ok_sample_reports_the_closest_echo():
     b, bus, gpio, clock = make()
     gpio.queue(gpio.echo_cm(60), gpio.echo_cm(40), gpio.echo_cm(50))
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 50) < 0.5 and abs(s.echo_cm - 40) < 0.5 and s.clear_t is None
+    assert s.dist_state == "ok" and near(s.dist_cm, 50) and near(s.echo_cm, 40) and s.clear_t is None
 
 
 def test_open_space_long_cycles_are_never_a_fault():
@@ -359,7 +374,7 @@ def test_none_samples_then_fault_after_three_consecutive():
     assert b.hub.read().dist_cm is None
     gpio.default = gpio.echo_cm(80)
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 80) < 0.5     # one valid sample clears the fault
+    assert s.dist_state == "ok" and near(s.dist_cm, 80)     # one valid sample clears the fault
     gpio.default = None
     assert b.hub.read().dist_state == "none"             # the count restarted
 
@@ -376,7 +391,7 @@ def test_single_miss_among_three_still_answers():
     b, bus, gpio, _ = make()
     gpio.queue(None, gpio.echo_cm(40), gpio.echo_cm(42))
     s = b.hub.read()
-    assert s.dist_state == "ok" and 40 <= s.dist_cm <= 42
+    assert s.dist_state == "ok" and near(s.dist_cm, 40)          # the lower of the two answers
 
 
 def test_ping_with_busy_wait_gap_over_1ms_is_discarded():
@@ -384,7 +399,7 @@ def test_ping_with_busy_wait_gap_over_1ms_is_discarded():
     gpio.queue(gpio.echo_cm(100), gpio.echo_cm(50), gpio.echo_cm(52))
     clock.gap_after(60, 0.002)                           # stall while the first ping's echo is high
     s = b.hub.read()
-    assert s.dist_state == "ok" and abs(s.dist_cm - 50) < 0.3     # the lower of the two undisturbed pings
+    assert s.dist_state == "ok" and near(s.dist_cm, 50)     # the lower of the two undisturbed pings
 
 
 def test_gap_before_the_echo_starts_is_tolerated():
