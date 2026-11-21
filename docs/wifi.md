@@ -13,6 +13,9 @@ starts its own WiFi network, a **hotspot**, and you connect to that directly.
 - While the hotspot is on and nobody is connected to it, the car checks every 2 minutes whether a known
   network has come back in range. If so it leaves the hotspot and rejoins it. It never switches while
   someone is connected to the hotspot.
+- If the car is on the home network and that network later disappears, the car gives NetworkManager about
+  2 to 4 minutes (two consecutive checks, 2 minutes apart) to reconnect, then starts the hotspot. A failed hotspot start is
+  retried at every check.
 
 ## Connect from an iPad or a laptop
 
@@ -36,7 +39,9 @@ Run on the car as root (`sudo car-wifi ...`):
 | `home` | home WiFi only, never the hotspot (persisted) |
 | `hotspot` | always the hotspot (persisted) |
 | `test-hotspot MINUTES` | hotspot now, back to the saved mode after MINUTES; nothing is persisted |
-| `password [NEW]` | show the passphrase, or set a new one (8 to 63 printable ASCII characters) |
+| `password` | show the passphrase |
+| `password --prompt` | set a new passphrase, typed twice without echo (8 to 63 printable ASCII characters) |
+| `password --stdin` | set a new passphrase read from one line of standard input (never pass it as an argument: it would land in shell history and sudo logs) |
 
 `home` mode has **no fallback**. If the home network disappears, the car is unreachable until you
 power-cycle it near a known network or switch the mode with a console. Use `auto` unless you have a reason.

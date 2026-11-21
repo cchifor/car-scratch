@@ -36,13 +36,13 @@ case "$a" in
         if [ -n "$(active)" ]; then echo "100 (connected)"; active; echo; else echo "30 (disconnected)"; echo "--"; fi ;;
     *"GENERAL.CONNECTION device show"*) active; echo ;;
     *"connection up"*)
-        if [ "$last" = car-hotspot ]; then printf '%s' "$last" > "$FAKE/active"
+        name=; prev=; for x; do [ "$prev" = id ] && name=$x; prev=$x; done
+        if [ "$name" = car-hotspot ]; then [ -z "${HOTSPOT_FAIL:-}" ] || exit 4; printf '%s' "$name" > "$FAKE/active"
         elif [ -n "${HOME_NEVER_ACTIVE:-}" ]; then : > "$FAKE/active"
-        else printf '%s' "$last" > "$FAKE/active"; fi ;;
+        else printf '%s' "$name" > "$FAKE/active"; fi ;;
     *"connection down"*) [ "$(active)" = "$last" ] && : > "$FAKE/active"; exit 0 ;;
-    *"device connect"*)
-        [ -z "${HOME_NEVER_ACTIVE:-}" ] || exit 1
-        printf '%s' "$HOME_PROFILE" > "$FAKE/active" ;;
+    *"device connect"*)  # the trap: NM may pick the hotspot
+        printf '%s' car-hotspot > "$FAKE/active" ;;
     *"-f NAME,TYPE connection show"*) cat "$FAKE/profiles" ;;
     *"connection.id connection show"*) grep -q "^$last:" "$FAKE/profiles" || exit 10; echo "$last" ;;
     *"802-11-wireless.ssid connection show"*) cat "$FAKE/ssid.$last" 2>/dev/null || exit 10 ;;
@@ -88,13 +88,13 @@ export PATH="$T/bin:$PATH"
 
 export FAKE="$T/fake" HOME_PROFILE=netplan-wlan0-CasaChifor
 export CAR_WIFI_CONF_DIR="$T/conf" CAR_WIFI_STATE_DIR="$T/state" CAR_WIFI_SELF="$T/car-wifi"
-unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE IW_FAIL SYSTEMD_RUN_FAIL CAR_WIFI_ROOT || true
+unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE IW_FAIL SYSTEMD_RUN_FAIL HOTSPOT_FAIL CAR_WIFI_ROOT || true
 
 # fresh FAKE state: a saved home profile and a hotspot profile, nothing active, nobody connected
 fresh() {
     rm -rf "$FAKE" "$T/state" "$T/conf"
     mkdir -p "$FAKE" "$T/conf"
-    unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE IW_FAIL SYSTEMD_RUN_FAIL
+    unset HOME_AFTER_POLLS HOME_NEVER_ACTIVE IW_FAIL SYSTEMD_RUN_FAIL HOTSPOT_FAIL
     printf '%s\n' "netplan-wlan0-CasaChifor:802-11-wireless" "car-hotspot:802-11-wireless" "Wired connection 1:802-3-ethernet" > "$FAKE/profiles"
     echo CasaChifor > "$FAKE/ssid.netplan-wlan0-CasaChifor"
     echo PiCar-ABCD > "$FAKE/ssid.car-hotspot"
@@ -103,6 +103,8 @@ fresh() {
     echo "$1" > "$T/conf/wifi-mode"
 }
 cw() { sh "$T/car-wifi" "$@" > "$T/out" 2>&1; }
+cwi() { printf '%s
+' "$1" | sh "$T/car-wifi" password --stdin > "$T/out" 2>&1; }
 active() { cat "$FAKE/active"; }
 called() { grep -q -- "$1" "$FAKE/calls"; }
 logged() { grep -q -- "$1" "$FAKE/journal"; }
@@ -186,15 +188,40 @@ check "status: mode, connection and client count" sh -c 'grep -q "mode:  *auto" 
 # 15. password
 fresh auto
 for p in short "$(printf 'x%.0s' $(seq 1 64))" "caf$(printf '\303\251')1234" "tab$(printf '\t')12345"; do
-    if cw password "$p"; then bad "password accepted an invalid value"; else ok "password rejects invalid value"; fi
+    if cwi "$p"; then bad "password accepted an invalid value"; else ok "password rejects invalid value"; fi
 done
 check "password: invalid values change nothing" sh -c '[ ! -e "$CAR_WIFI_CONF_DIR/hotspot.psk" ] && ! grep -q "connection modify" "$FAKE/calls"'
-cw password "good pass 123"
+cwi "good pass 123"
 check "password: set updates the file (0600) and the profile" sh -c '[ "$(cat "$CAR_WIFI_CONF_DIR/hotspot.psk")" = "good pass 123" ] && [ "$(stat -c %a "$CAR_WIFI_CONF_DIR/hotspot.psk")" = 600 ] && grep -q "connection modify id car-hotspot 802-11-wireless-security.psk good pass 123" "$FAKE/calls"'
 cw password
 check "password: show prints it" sh -c '[ "$(cat "$0")" = "good pass 123" ]' "$T/out"
 rm -f "$CAR_WIFI_CONF_DIR/hotspot.psk"
 if cw password; then bad "password with no file succeeded"; else ok "password: no file fails"; fi
+: > "$FAKE/calls"
+if cw password "good pass 123"; then bad "password accepted the passphrase as an argument"; else ok "password: the argv form is refused"; fi
+check "password: argv attempt changed nothing" sh -c '! grep -q "connection modify" "$FAKE/calls"'
+
+# 17. watch with no WiFi connection at all (home lost after boot): grace, then hotspot, retried
+fresh auto; cw watch
+check "watch: no connection, first run -> grace, no hotspot" sh -c '[ -z "$(cat "$FAKE/active")" ] && ! grep -q "connection up" "$FAKE/calls"'
+HOTSPOT_FAIL=1 cw watch
+check "watch: no connection, second run, hotspot start fails -> nothing active" sh -c '[ -z "$(cat "$FAKE/active")" ] && grep -q "connection up id car-hotspot" "$FAKE/calls"'
+cw watch
+check "watch: failed hotspot is retried on the next run" sh -c '[ "$(cat "$FAKE/active")" = car-hotspot ]'
+fresh auto; cw watch; printf '%s' "$HOME_PROFILE" > "$FAKE/active"; cw watch; : > "$FAKE/active"; cw watch
+check "watch: reconnecting resets the grace counter" sh -c '[ -z "$(cat "$FAKE/active")" ] && ! grep -q "connection up" "$FAKE/calls"'
+fresh home; cw watch; cw watch; cw watch
+check "watch: home mode never starts the hotspot" sh -c '! grep -q "connection up" "$FAKE/calls"'
+fresh auto; : > "$FAKE/calls"; echo 1 > "$FAKE/stations"; cw watch; cw watch
+check "watch: no connection and the hotspot gets started even with the stale station file (no AP active)" sh -c '[ "$(cat "$FAKE/active")" = car-hotspot ]'
+
+# 18. returning home brings up an explicit profile, never what "device connect" would pick
+fresh auto; printf '%s' car-hotspot > "$FAKE/active"; echo CasaChifor > "$FAKE/visible"; cw home
+check "home from the hotspot: explicit profile on wlan0, no device connect" sh -c '[ "$(cat "$FAKE/active")" = netplan-wlan0-CasaChifor ] && grep -q "connection up id netplan-wlan0-CasaChifor ifname wlan0" "$FAKE/calls" && ! grep -q "device connect" "$FAKE/calls"'
+fresh auto; printf '%s' "$HOME_PROFILE" > "$FAKE/active"; cw test-hotspot 5; cw revert
+check "test revert lands on the home profile, not the hotspot" sh -c '[ "$(cat "$FAKE/active")" = netplan-wlan0-CasaChifor ]'
+fresh auto; printf '%s' car-hotspot > "$FAKE/active"; : > "$FAKE/calls"; cw home
+check "home: never tries the hotspot profile as home" sh -c '! grep -q "connection up id car-hotspot" "$FAKE/calls"'
 
 # 16. installer: install, idempotence, uninstall leaves the home profile
 fresh auto; rm -f "$T/conf/wifi-mode"; rmdir "$T/conf"

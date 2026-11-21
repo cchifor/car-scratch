@@ -118,7 +118,7 @@ fi
 put "$TOOL" 755 <<'CARWIFI_EOF'
 #!/bin/sh
 # car-wifi: keep the car reachable. Home WiFi when there is one, otherwise its own hotspot.
-# Commands: status | auto | home | hotspot | test-hotspot MINUTES | password [NEW] | boot | watch
+# Commands: status | auto | home | hotspot | test-hotspot MINUTES | password [--prompt|--stdin] | boot | watch
 # Invariant: in auto mode the car is never left without the home network or the hotspot.
 set -u
 
@@ -197,10 +197,32 @@ hotspot_up() {
     return 1
 }
 
-# ask NetworkManager for any saved network; 0 when one is active within SWITCH_WAIT
+# Bring up an explicit saved infrastructure profile (never the hotspot: "nmcli device connect" may
+# pick it). The profile whose SSID is in range goes first, then up to two others (hidden networks).
+# 0 when one of them is verified active within SWITCH_WAIT.
 try_home() {
-    nmcli -w "$SWITCH_WAIT" device connect "$IFACE" >/dev/null 2>&1 || true
-    wait_active "" "$SWITCH_WAIT"
+    first=$(visible_profile)
+    list=$first
+    [ -z "$first" ] || list=$first$(printf '\n')
+    others=$(infra_profiles | grep -vxF -- "${first:-/}" | sed -n 1,2p)
+    list=$list$others
+    oldifs=$IFS
+    IFS='
+'
+    set -f
+    for p in $list; do
+        [ -n "$p" ] || continue
+        log "trying home profile '$p'"
+        nmcli -w "$SWITCH_WAIT" connection up id "$p" ifname "$IFACE" >/dev/null 2>&1 || true
+        if wait_active "$p" "$SWITCH_WAIT"; then
+            set +f
+            IFS=$oldifs
+            return 0
+        fi
+    done
+    set +f
+    IFS=$oldifs
+    return 1
 }
 
 # saved infrastructure WiFi profiles (one per line), the hotspot excluded
@@ -262,7 +284,20 @@ cmd_boot() {
 cmd_watch() {
     [ "$(get_mode)" = auto ] || return 0
     [ ! -e "$HOLD" ] || return 0
-    [ "$(active_conn)" = "$HOTSPOT" ] || return 0
+    c=$(active_conn)
+    if [ -z "$c" ]; then
+        # no WiFi connection at all (home network lost after boot, or a failed hotspot start):
+        # give NetworkManager two consecutive runs, then start the hotspot; retried every run
+        n=$(cat "$STATE_DIR/nowifi" 2>/dev/null || echo 0)
+        n=$((n + 1))
+        echo "$n" > "$STATE_DIR/nowifi"
+        [ "$n" -ge 2 ] || { log "watch: no WiFi connection (run $n), waiting"; return 0; }
+        log "watch: no WiFi connection for $n runs, starting the hotspot"
+        if hotspot_up; then rm -f "$STATE_DIR/nowifi"; fi
+        return 0
+    fi
+    rm -f "$STATE_DIR/nowifi"
+    [ "$c" = "$HOTSPOT" ] || return 0
     [ "$(station_count)" -eq 0 ] || return 0
     target=$(visible_profile)
     [ -n "$target" ] || return 0
@@ -352,12 +387,22 @@ cmd_test_hotspot() {
 }
 
 cmd_password() {
-    if [ $# -eq 0 ]; then
-        [ -r "$PSK_FILE" ] || die "cannot read $PSK_FILE (run as root; installed by wifi-setup.sh)"
-        head -n 1 "$PSK_FILE"
-        return 0
-    fi
-    p=$1
+    case ${1:-} in
+        "")
+            [ -r "$PSK_FILE" ] || die "cannot read $PSK_FILE (run as root; installed by wifi-setup.sh)"
+            head -n 1 "$PSK_FILE"
+            return 0
+            ;;
+        --stdin) IFS= read -r p || die "no passphrase on stdin" ;;
+        --prompt)
+            [ -t 0 ] || die "--prompt needs a terminal (use --stdin)"
+            trap 'stty echo 2>/dev/null' EXIT INT TERM
+            printf 'New passphrase: ' >&2; stty -echo; IFS= read -r p; stty echo; echo >&2
+            printf 'Again: ' >&2; stty -echo; IFS= read -r p2; stty echo; echo >&2
+            [ "$p" = "$p2" ] || die "the two entries differ"
+            ;;
+        *) die "usage: car-wifi password [--prompt | --stdin]  (the passphrase is never taken from arguments)" ;;
+    esac
     [ "${#p}" -ge 8 ] || die "the passphrase must be 8..63 characters"
     [ "${#p}" -le 63 ] || die "the passphrase must be 8..63 characters"
     rest=$(printf '%s' "$p" | LC_ALL=C tr -d ' -~'; echo x)
@@ -405,7 +450,7 @@ case $cmd in
     boot) cmd_boot ;;
     watch) cmd_watch ;;
     revert) cmd_revert ;;
-    *) echo "usage: car-wifi status | auto | home | hotspot | test-hotspot MINUTES | password [NEW]" >&2; exit 2 ;;
+    *) echo "usage: car-wifi status | auto | home | hotspot | test-hotspot MINUTES | password [--prompt|--stdin]" >&2; exit 2 ;;
 esac
 CARWIFI_EOF
 
