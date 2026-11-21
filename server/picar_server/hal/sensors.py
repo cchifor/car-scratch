@@ -22,7 +22,6 @@ ECHO_START_TIMEOUT_S = 0.030     # no rising edge within 30 ms: no answer
 ECHO_FAR_S = 0.012               # echo ending after 12 ms (and before 40 ms): nothing within ~2 m
 ECHO_STUCK_S = 0.040             # echo still high at 40 ms: the module's long cycle (BUSY) or a stuck line, never "far"
 BUSY_CYCLE_MAX_S = 0.6           # the long cycle holds the line high 401.5 ms (measured); longer than this = stuck line
-NO_ANSWER_FAULT_S = 1.5          # BUSY for this long without one ok/far reading counts toward the fault as well
 MAX_GAP_S = 0.001                # a busy-wait iteration gap above this (GIL / scheduler) discards the ping
 FAR = 999.0
 FAULT_AFTER = 3                  # consecutive "none" samples
@@ -128,7 +127,6 @@ class SensorHub:
         self.us = Ultrasonic(gpio, clock, us_pin)
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
-        self._last_answer_t = clock.monotonic()    # last ok/far reading (or start): bounds how long BUSY is tolerated
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -160,20 +158,18 @@ class SensorHub:
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
         if v is BUSY:
-            if self.clock.monotonic() - self._last_answer_t <= NO_ANSWER_FAULT_S:
-                # The module's long no-echo cycle: no reading this sample, not a fault. It neither counts toward
-                # FAULT_AFTER nor resets it. It does clear the near/far memory, so the first sample after the
-                # blind window takes 3 pings (an obstacle may have appeared meanwhile). Forward motion still needs
-                # a fresh ok/far reading: the controller's staleness rule is unchanged.
-                self._last_cm, self._last_far = None, False
-                return None, DIST_NONE if self._nones < FAULT_AFTER else DIST_FAULT
-            v = None                                       # busy for too long without an answer: counts as none
+            # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
+            # its usual answer: 59-75 % of pings, measured). No reading this sample, but not a fault: it neither
+            # counts toward FAULT_AFTER nor resets it. A line stuck high is caught in ping() (over 0.6 s). It clears
+            # the near/far memory, so the first sample after the blind window takes 3 pings (an obstacle may have
+            # appeared meanwhile). Forward motion still needs a fresh ok/far reading (controller, unchanged).
+            self._last_cm, self._last_far = None, False
+            return None, DIST_NONE if self._nones < FAULT_AFTER else DIST_FAULT
         if v is None:
             self._nones += 1
             self._last_cm, self._last_far = None, False
             return None, DIST_FAULT if self._nones >= FAULT_AFTER else DIST_NONE
         self._nones = 0
-        self._last_answer_t = self.clock.monotonic()
         if v >= FAR:
             self._last_cm, self._last_far = None, True
             return None, DIST_FAR
@@ -206,28 +202,36 @@ class SensorHub:
         return out
 
     # -- line follower ----------------------------------------------------------------------------------
-    def _read_frame(self) -> tuple[Optional[list[int]], float]:
-        """One block read under the I2C lock only. Returns (five values, or None for an invalid frame, seconds the
-        bus call took). The module answers all-0xFF now and then (~1 % of frames); any value above LINE_RAW_MAX
-        marks the frame invalid. OSError / IndexError propagate."""
+    def _read_frame(self) -> tuple[Optional[list[int]], float, bool]:
+        """One block read under the I2C lock only. Returns (five values or None, seconds the bus call took, True if
+        the call failed). Measured on the car (2026-11-21): the module is busy for one read every 11 ms and answers
+        all-0xFF then (about 15 % of reads at a 40 ms cadence), and about 1 sample in 300 gets EIO; any value above
+        LINE_RAW_MAX marks the frame invalid."""
         with self.lock:
             t0 = self.clock.monotonic()
-            raw = self.bus.read_i2c_block_data(LINE_ADDR, 0, 10)
+            try:
+                raw = self.bus.read_i2c_block_data(LINE_ADDR, 0, 10)
+            except OSError:
+                return None, self.clock.monotonic() - t0, True
             took = self.clock.monotonic() - t0
-        vals = [(raw[2 * i] << 8) | raw[2 * i + 1] for i in range(5)]
-        return (None if max(vals) > LINE_RAW_MAX else vals), took
+        try:
+            vals = [(raw[2 * i] << 8) | raw[2 * i + 1] for i in range(5)]
+        except (IndexError, TypeError):
+            return None, took, True
+        return (None if max(vals) > LINE_RAW_MAX else vals), took, False
 
-    def _read_checked(self) -> tuple[Optional[list[int]], bool]:
-        """A frame, retried once at once when invalid, but never after a slow bus call (a stalling module must
-        hold the bus lock only once). Returns (values or None, True if a bus call was slow)."""
-        slow = False
-        for _ in range(2):
-            vals, took = self._read_frame()
+    def _read_checked(self, attempts: int = 2) -> tuple[Optional[list[int]], bool, bool]:
+        """A frame, retried once at once when invalid or when the call failed fast (the next read is outside the
+        module's busy window), but never after a slow bus call (a stalling module must hold the bus lock only once).
+        Returns (values or None, True if a bus call was slow, True if the last call failed)."""
+        slow = failed = False
+        for _ in range(attempts):
+            vals, took, failed = self._read_frame()
             if took > LINE_MOVING_SLOW_S:
                 slow = True
             if vals is not None or slow:
-                return vals, slow
-        return None, slow
+                return vals, slow, failed
+        return None, slow, failed
 
     def _read_line(self) -> Optional[list[int]]:
         """Stopped: probe under the motor lock (with backoff while absent). Moving: only when healthy (see
@@ -259,33 +263,33 @@ class SensorHub:
         car has been stopped (docs/decisions.md D4)."""
         if self._line_suppressed or not self.line_ok or self._line_good < LINE_MOVING_MIN_GOOD:
             return None
-        try:
-            vals, slow = self._read_checked()
-        except (OSError, IndexError) as e:
-            self._suppress_line(f"read failed ({e})")
-            return None
-        if vals is None:
-            self._suppress_line(f"a read took more than {LINE_MOVING_SLOW_S * 1000:.0f} ms" if slow
-                                else "two invalid frames in a row")
-            return None
+        vals, slow, failed = self._read_checked()
         if slow:
             self._suppress_line(f"a read took more than {LINE_MOVING_SLOW_S * 1000:.0f} ms")
-        else:
-            self._line_good += 1
+            return vals                                    # a valid frame is still used, once
+        if vals is None:                                   # failed twice, fast: skip this sample
+            self._line_invalid_run += 1
+            if self._line_invalid_run >= LINE_ABSENT_AFTER:
+                self._suppress_line(f"{LINE_ABSENT_AFTER} samples in a row without a frame"
+                                    + (" (I2C errors)" if failed else ""))
+            else:
+                self.line_skipped = True
+            return None
+        self._line_invalid_run = 0
+        self._line_good += 1
         return vals
 
     def _suppress_line(self, why: str) -> None:
         self._line_suppressed = True
         self._line_good = 0
+        self._line_invalid_run = 0
         log.warning("line follower: not reading while moving until the car stops (%s)", why)
 
     def _probe_line(self, now: float) -> Optional[list[int]]:
-        try:
-            vals, slow = self._read_checked()
-        except (OSError, IndexError):
-            return self._line_failed(now)
-        if vals is None:                                   # invalid (twice, or once and slow): skip this sample
-            self._line_good = 0
+        vals, slow, failed = self._read_checked(2 if self.line_ok else 1)   # absent / never seen: one read per probe
+        if vals is None and failed and not self.line_ok:
+            return self._line_failed(now)                  # not present (never seen, or absent): back off at once
+        if vals is None:                                   # failed twice (or once and slow): skip this sample
             self._line_invalid_run += 1
             if self._line_invalid_run >= LINE_ABSENT_AFTER:
                 return self._line_failed(now)

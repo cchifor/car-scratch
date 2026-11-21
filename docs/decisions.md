@@ -125,9 +125,12 @@ minute) while the car stood still facing a weak reflector about 110 cm away.
 
 1. An echo still high at 40 ms is `BUSY` (the module's long cycle), never `far`. While the line stays high the
    pin is not driven and not re-triggered.
-2. A busy sample is `none` and does not count toward the 3-sample fault, unless there has been no `ok`/`far` reading
-   for 1.5 s (about three cycles). A line high for longer than 0.6 s (one cycle is 401.5 ms) is a stuck line and
-   counts as "no answer" as before.
+2. A busy sample is `none` and never counts toward the 3-sample fault. A line high for longer than 0.6 s (one
+   cycle is 401.5 ms) is a stuck line and counts as "no answer" as before, and so does no rising edge after the
+   trigger. (A first version also faulted after 1.5 s without an `ok`/`far` reading. Facing open space that
+   fired every few seconds: with the server stopped, 59 to 75 % of pings were long cycles at every rest between
+   pings from 2 to 100 ms, and none of 300 pings returned a real echo. A cycle that starts on the trigger and ends
+   by itself is a living module that heard nothing, so that rule was removed.)
 3. Motion safety is unchanged: forward motion still needs an `ok`/`far` sample younger than 150 ms to start or to
    continue. During a busy cycle a forward drive is therefore refused or stopped; only the false fault flag and
    its events are gone.
@@ -139,7 +142,40 @@ busy sample now clears that memory, so the next sample takes 3 pings. (b) Pre-ex
 the median averaged them, so `far` (999) and a real 10 cm echo made 505 cm. The lower of two valid pings now
 counts (`median_low`).
 
-**Residual.** Driving forward toward a weak reflector can still stop the car when the module goes into its long
-cycle (no fresh reading for 150 ms). Accepting "busy" as clear for up to one cycle while moving would remove those
+**Residual.** Driving forward toward a weak reflector, or into open space, still stops the car when the module goes
+into its long cycle (no fresh reading for 150 ms); facing open space that is most of the time. Accepting "busy" as clear for up to one cycle while moving would remove those
 stops at the cost of up to ~0.4 s without distance data (about 10 cm at full speed); that is an owner decision and
 is not made here.
+
+## D6 — Line follower: retry quick failures, lose the module only after 3 failed samples (2026-11-21)
+
+**Symptom.** `sensor_fault` / `sensor_ok` for the line follower about every 10 to 20 s with the car standing
+still, each time with "line follower absent", then "present" 2 s later.
+
+**Measured on the car (2026-11-21, server stopped).** D4 assumed about 1 % invalid frames (from 40 reads). Longer
+runs show:
+
+- Back-to-back reads (1883 in 6 s): the module is busy for one read (2.9 ms) every 11 ms and answers all-0xFF
+  then; the next read is valid. 31 % of back-to-back reads, about 15 % at the server's 40 ms cadence.
+- The server's exact pattern (light reads, then a line read with one immediate retry, every 40 ms): 1500 samples
+  with no I2C error and 2 samples invalid after the retry, never two in a row; in other runs about 1 sample in 300
+  got EIO (errno 5), with or without ultrasonic pings, always followed by good reads.
+- A missing device is NACKed at once (D4); an EIO here is a transfer error from a present module.
+
+The old rules turned these into losses: one I2C error made the module absent at once (2 s back-off, then present
+again: one flap every ~13 s at 25 samples a second), and while moving one error or one sample with two invalid
+frames switched moving reads off until the next stop, which at these rates happens within seconds of driving.
+
+**Decision.**
+
+1. An invalid frame or an I2C error that returns quickly is retried once at once (as invalid frames already were).
+2. A sample that still has no frame is skipped (telemetry bridges one skipped frame; the controller raises its line
+   `sensor_fault` only after 3 samples without a frame). Only 3 failed samples in a row make a present module
+   absent while stopped, or switch moving reads off until the next stop while moving.
+3. A module that is not present (never seen, or absent and re-probed after its back-off) is read once per probe and
+   backs off on an error, as before.
+4. Unchanged from D4: a bus call slower than 15 ms switches moving reads off at once (the stalled-slave protection),
+   moving reads take only the bus lock and need 10 good reads since the last failure.
+
+**Risk.** Bus time per sample is bounded as before: at most two quick reads (about 6 ms) per sample under the bus
+lock, and a module that keeps failing is dropped after 3 samples (about 120 ms).

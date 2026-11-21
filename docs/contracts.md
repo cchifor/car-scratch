@@ -96,8 +96,9 @@ Threading rules (real/dry-run):
   loop saw a gap > 1 ms between iterations.
 - The line follower is probed with a back-off while stopped, and read **while the car moves** only under the
   guards of decision D4 (`docs/decisions.md`): `line_enabled`, a healthy module (10 good reads in a row since its
-  last failure), only the I2C bus lock (never the motor lock), and a switch-off until the next stop after an
-  error, two invalid frames in a row or a bus call over 15 ms. `line_enabled` defaults to false (§3).
+  last failure), only the I2C bus lock (never the motor lock), and a switch-off until the next stop after
+  3 samples in a row without a frame or a bus call over 15 ms (decision D6). An invalid frame or a quick I2C error
+  is retried once at once; a sample that still fails is skipped. `line_enabled` defaults to false (§3).
 
 Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
 
@@ -114,8 +115,8 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
   no answer (stuck line). See decision D5.
   Median of 3 pings when the last reading was < the near hint, after `none` or a busy cycle, or when the car
   moves forward; else 1 ping. With only 2 valid pings the lower one counts (never an average with `far`).
-  A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`. A busy sample is `none` but does
-  not count toward the fault, unless there has been no `ok`/`far` reading for 1.5 s.
+  A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`. A busy sample is `none` and never
+  counts toward the fault (facing open space most pings are long cycles).
 - PCF8591: for each input `ch` in `light_channels` (left, middle, right; default 0, 1, 2):
   `write_byte(0x48, 0x40|ch)`, discard one read, then read. `light_raw` is ordered left, middle, right.
 - Line follower: `read_i2c_block_data(0x11, 0, 10)` → 5 big-endian 16-bit values. A frame with any value

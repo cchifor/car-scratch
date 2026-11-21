@@ -153,7 +153,7 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
   `false` once it moves freely again or after `reset_pose` / a world change.
 - `dist.state`: `ok` | `far` (nothing in range; `cm` null) | `none` (this sample got no echo, or the module is
   in its long no-echo cycle; `cm` null) | `fault` (3 consecutive `none` samples that are not the module's long
-  cycle, or no `ok`/`far` for 1.5 s; `cm` null). `cm` is measured from the sensor face.
+  cycle: no answer to the trigger, or a line stuck high; `cm` null). `cm` is measured from the sensor face.
 - `obstacle`: true when `dist.cm < safety.margin_cm`.
 - `line.on`: 5 booleans, sensor 1 = leftmost; `line.pos`: −2 (left) … +2 (right) or null when no sensor sees a line.
 - `light.bright`: 0..100, higher = brighter; `light.max`: `left|middle|right|none`.

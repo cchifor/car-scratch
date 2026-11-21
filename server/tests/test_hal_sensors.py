@@ -159,12 +159,22 @@ def test_valid_pings_then_busy_never_average_with_far():
     assert s.dist_state == "ok" and abs(s.dist_cm - 10) < 0.5
 
 
-def test_module_that_only_answers_with_long_cycles_becomes_a_fault():
+def test_open_space_long_cycles_are_never_a_fault():
+    # Measured on the car facing open space: 59-75 % of pings are long cycles and none returns a real echo. A long
+    # cycle that starts on the trigger and ends by itself is a living module that heard nothing: no reading, but no
+    # fault (forward motion is still refused: it needs a fresh ok/far reading).
     b, bus, gpio, clock = make()
-    gpio.default = gpio.long_cycle()                     # every ping: a long cycle, never a reading
-    states = _read_for(b, clock, 2.5)
-    assert states[-1] == "fault"
+    gpio.default = gpio.long_cycle()
+    states = _read_for(b, clock, 5.0)
+    assert "fault" not in states and set(states) == {"none"}
     assert gpio.contention == 0
+
+
+def test_no_rise_still_faults_while_long_cycles_come_and_go():
+    b, bus, gpio, clock = make()
+    gpio.default = None                                  # the module never answers the trigger
+    states = _read_for(b, clock, 0.3)
+    assert states[-1] == "fault"
 
 
 def test_none_samples_then_fault_after_three_consecutive():
@@ -301,4 +311,6 @@ def test_line_loss_at_runtime_reports_none_and_capability_drops():
     assert b.hub.read().line_raw is not None
     bus.line_bytes = None
     assert b.hub.read().line_raw is None
-    assert b.capabilities()["line"] is False
+    assert b.capabilities()["line"] is True              # one failed sample is skipped (measured: ~1 in 300 gets EIO)
+    b.hub.read(); b.hub.read()
+    assert b.capabilities()["line"] is False             # three in a row: absent

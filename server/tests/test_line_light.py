@@ -225,13 +225,39 @@ def test_moving_read_takes_only_the_bus_lock():
     assert seen == [(False, False)]                                     # stopped probe holds both
 
 
-def test_moving_read_error_suppresses_until_stop_then_needs_ten_good_reads(caplog):
+def test_one_quick_error_is_retried_at_once_moving_and_stopped():
+    # Measured: about 1 sample in 300 gets EIO from a module that is present; the retry reads it fine.
+    b, bus, _ = make({"line_enabled": True})
+    healthy(b, bus)
+    bus.line_script.extend([None, fr(7, 7, 7, 7, 7)])
+    assert b.hub.read().line_raw == [7] * 5 and b.hub.line_ok
+    b.set_motors(1000, 1000)
+    bus.line_script.extend([None, fr(8, 8, 8, 8, 8)])
+    assert b.hub.read().line_raw == [8] * 5
+    assert b.hub.read().line_raw == [100] * 5                           # not suppressed
+
+
+def test_a_failed_sample_is_skipped_not_a_loss_moving_and_stopped(caplog):
+    b, bus, _ = make({"line_enabled": True})
+    healthy(b, bus)
+    caplog.set_level(logging.WARNING, logger="picar.sensors")
+    bus.line_script.extend([None, None])                                # stopped: error twice
+    assert b.hub.read().line_raw is None and b.hub.line_skipped and b.hub.line_ok
+    assert b.hub.read().line_raw == [100] * 5
+    b.set_motors(1000, 1000)
+    bus.line_script.extend([None, BAD])                                 # moving: error, then an invalid frame
+    assert b.hub.read().line_raw is None and b.hub.line_skipped
+    assert b.hub.read().line_raw == [100] * 5                           # still read while moving
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_moving_three_failed_samples_suppress_until_stop_then_need_ten_good_reads(caplog):
     b, bus, _ = make({"line_enabled": True})
     healthy(b, bus)
     caplog.set_level(logging.WARNING, logger="picar.sensors")
     b.set_motors(1000, 1000)
-    bus.line_script.append(None)
-    assert b.hub.read().line_raw is None
+    bus.line_script.extend([None] * 6)
+    assert [b.hub.read().line_raw for _ in range(3)] == [None] * 3
     n = rblk(bus)
     for _ in range(5):
         assert b.hub.read().line_raw is None
@@ -248,14 +274,13 @@ def test_moving_read_error_suppresses_until_stop_then_needs_ten_good_reads(caplo
     assert b.hub.read().line_raw == [100] * 5                           # healthy again
 
 
-def test_moving_two_invalid_frames_suppress():
+def test_moving_two_invalid_frames_are_one_skipped_sample():
     b, bus, _ = make({"line_enabled": True})
     healthy(b, bus)
     b.set_motors(1000, 1000)
     bus.line_script.extend([BAD, BAD])
-    assert b.hub.read().line_raw is None
-    n = rblk(bus)
-    assert b.hub.read().line_raw is None and rblk(bus) == n
+    assert b.hub.read().line_raw is None and b.hub.line_skipped
+    assert b.hub.read().line_raw == [100] * 5
 
 
 def test_moving_one_invalid_frame_is_retried_and_does_not_suppress():
@@ -630,7 +655,10 @@ def test_a_skipped_frame_sets_the_flag_and_other_nones_do_not():
     assert b.hub.read().line_skipped is True
     bus.line_bytes = None
     s = b.hub.read()
-    assert s.line_raw is None and s.line_skipped is False              # an I2C error is a loss, not a skip
+    assert s.line_raw is None and s.line_skipped is True               # errors on a present module: skipped ...
+    s = b.hub.read()
+    assert s.line_raw is None and s.line_skipped is False              # ... until the third failed sample: a loss
+    assert b.hub.line_ok is False
 
 
 # ---- huge numbers --------------------------------------------------------------------------------------------------
