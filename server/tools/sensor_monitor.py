@@ -92,7 +92,7 @@ def frame(line, light, lr: Range, gr: Range, stats: dict, server_paused: bool) -
     out.append(f"  invalid frames: {stats['invalid']} of {stats['frames']}"
                "   (threshold shown once a sensor has seen both white and the line, 40+ counts apart)")
     out.append("")
-    out.append("LIGHT (PCF8591 0x48)   lower = brighter   (this car: left = in0, middle = in2, right = in1)")
+    out.append("LIGHT (PCF8591 0x48)   lower = brighter   (this car: left = in3, middle = in2, right = in1; in0 = board sensor)")
     out.append("            value  " + " " * BAR + "    min    max")
     for i in range(4):
         v = light[i] if light else None

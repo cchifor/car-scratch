@@ -36,7 +36,7 @@ The first time the server starts, it reads an old `~/picar/calibration.json` tha
 | `line_sensor_spacing_cm` | Distance between two neighbouring line sensors. | cm | Tape measure, centre to centre |
 | `line_black_high` | `true` when a black line reads a HIGH value (measured on this car). | true or false | Line procedure (below) |
 | `line_threshold` | The raw value that separates "line" from "ground". With `line_black_high`, a sensor sees the line when its raw value is **above** this value; otherwise when it is **below**. One number for all five sensors, or a list of 5 (leftmost first). | raw value, 0–1023 | Line procedure (below) |
-| `light_channels` | Which PCF8591 input (0 to 3) each light sensor is wired to, as `[left, middle, right]`. This car: `[0, 2, 1]`. | 3 distinct integers | Light procedure (below) |
+| `light_channels` | Which PCF8591 input (0 to 3) each light sensor is wired to, as `[left, middle, right]`. This car: `[3, 2, 1]`. | 3 distinct integers | Light procedure (below) |
 | `light_dark` | Raw light reading in the room (the "dark" end). One number, or a list of 3 (left, middle, right). | raw value, 0–255 | Light procedure (below) |
 | `light_bright` | Raw light reading with a torch on the sensor. One number, or a list of 3. | raw value, 0–255 | Light procedure (below) |
 
@@ -52,10 +52,13 @@ Notes:
 
 ## Measured on the sensors (2026-11-21)
 
-- **Light (PCF8591 at I2C-1 0x48).** With a torch on one sensor at a time: left = input 0, middle = input 2,
-  right = input 1; input 3 is not connected (it floats). Lower raw = brighter. Room light: left about 85–92,
-  middle about 250, right about 252. Torch on the sensor: left about 3, middle about 19, right about 19. The
-  sensors differ so much that one dark and one bright value for all three cannot work: use lists.
+- **Light (PCF8591 at I2C-1 0x48).** With a torch on one sensor at a time: left = input 3, middle = input 2,
+  right = input 1. Input 0 is a light sensor on the converter board itself: it sees room light (about 85-92)
+  and also reacts to a torch held near the left or right sensor, which made the first measurements look
+  inconsistent; it is not used. Lower raw = brighter. Room light: left, middle and right about 252, 250 and
+  252; torch on the sensor: about 13, 19 and 19. Saved on the car: `light_channels` `[3, 2, 1]`,
+  `light_dark` `[252, 250, 252]`, `light_bright` `[13, 19, 19]`; with them all three read 0 % in room light
+  and about 100 % with the torch on that sensor, and the brightest direction follows the torch.
 - **Line follower (I2C-1 0x11).** Five 16-bit values, sensor 1 is the leftmost. A read takes about 2.9 ms
   (3.0 ms at most over 40 reads) with no bus error. About 1 % of frames are all 0xFF (65535 in every slot);
   the server treats a frame with any value above 1023 as invalid and reads again. White or reflective close to
@@ -152,8 +155,9 @@ Guided: `python3 -m tools.calib --url ws://picar.local:8080/ws light` (no motion
 If the procedure stops without saving (a refusal, Ctrl-C, a lost connection), it puts the car's previous
 `light_channels` back.
 
-The procedure assumes the three connected sensors are on inputs 0 to 2, as on this car (input 3 is not
-connected and cannot be a sensor). Afterwards the monitor should show the brightness bar of the sensor you
+The car reads three inputs at a time, so each step samples all four inputs under two temporary input maps.
+On this car run it with `--ignore-inputs 0`: input 0 is the converter board's own light sensor, and torch
+light spilling onto it could otherwise be taken for the left or right sensor. Afterwards the monitor should show the brightness bar of the sensor you
 light, and the arrow should point to it.
 
 ## After you change the file

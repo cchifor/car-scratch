@@ -410,11 +410,25 @@ def test_medians():
 
 
 def test_infer_light_finds_this_cars_wiring():
-    # slots are inputs 0, 1, 2; left = input 0, middle = input 2, right = input 1 (measured)
-    room = [88, 252, 250]
-    torch = {"left": [3, 252, 250], "middle": [88, 252, 19], "right": [88, 19, 250]}
-    assert calib.infer_light(room, torch) == {"light_channels": [0, 2, 1], "light_dark": [88, 250, 252],
-                                              "light_bright": [3, 19, 19]}
+    # all four inputs; measured on the car: left = input 3, middle = input 2, right = input 1; input 0 is a light
+    # sensor on the converter board that a torch near the left or right sensor also lights
+    room = [90, 252, 250, 252]
+    torch = {"left": [60, 252, 250, 13], "middle": [88, 252, 19, 252], "right": [5, 19, 250, 252]}
+    assert calib.infer_light(room, torch, ignore=(0,)) == {
+        "light_channels": [3, 2, 1], "light_dark": [252, 250, 252], "light_bright": [13, 19, 19]}
+
+
+def test_infer_light_without_ignore_can_pick_the_board_sensor():
+    # the reason for --ignore-inputs: torch spill on the board sensor (input 0) wins for "right"
+    room = [90, 252, 250, 252]
+    torch = {"left": [88, 252, 250, 13], "middle": [88, 252, 19, 252], "right": [0, 200, 250, 252]}
+    assert calib.infer_light(room, torch)["light_channels"] == [3, 2, 0]
+    assert calib.infer_light(room, torch, ignore=(0,))["light_channels"] == [3, 2, 1]
+
+
+def test_infer_light_refuses_when_too_few_inputs_remain():
+    with pytest.raises(calib.CalibError):
+        calib.infer_light([90, 252, 250, 252], {}, ignore=(0, 1))
 
 
 def test_infer_light_refuses_weak_or_ambiguous_torches():
@@ -463,8 +477,10 @@ def _fake_car(log, state):
             seq = 0
             while not sock.closed:
                 seq += 1
+                light = ([state["inputs"][i] for i in state.get("map", [0, 1, 2])] if "inputs" in state
+                         else state["light"])          # with "inputs", the fake honours the live input map
                 await sock.send_json({"t": "tel", "seq": seq, "line": {"ok": True, "raw": state["line"]},
-                                      "light": {"ok": True, "raw": state["light"]}})
+                                      "light": {"ok": True, "raw": light}})
                 await asyncio.sleep(0.01)
 
         task = None
@@ -478,6 +494,8 @@ def _fake_car(log, state):
                                       "hw": {"backend": "real"}, "config": {}, "hb_ms": 200, "server": {}})
                 task = asyncio.create_task(tel())
             elif m["t"] == "cmd":
+                if m.get("op") == "calibrate" and "light_channels" in m:
+                    state["map"] = list(m["light_channels"])
                 extra = ({"previous": {"light_channels": state["previous"]}}
                          if "previous" in state and "light_channels" in m else {})
                 await sock.send_json({"t": "ack", "id": m["id"], "ok": True, **extra})
@@ -513,21 +531,23 @@ async def test_calib_line_saves_polarity_and_thresholds_and_never_moves(aiohttp_
 
 
 async def test_calib_light_saves_mapping_and_never_moves(aiohttp_client, monkeypatch):
-    log, state = [], {"line": None, "light": [88, 252, 250]}
+    # this car: left = input 3, middle = input 2, right = input 1, input 0 = a light sensor on the board
+    log, state = [], {"line": None, "inputs": [90, 252, 250, 252]}
     c = await aiohttp_client(_fake_car(log, state))
     url = f"ws://{c.server.host}:{c.server.port}/ws"
-    steps = iter([[88, 252, 250], [3, 252, 250], [88, 252, 19], [88, 19, 250]])
+    steps = iter([[90, 252, 250, 252], [60, 252, 250, 13], [88, 252, 19, 252], [5, 19, 250, 252]])
 
     async def fake_ask(_prompt):
-        state["light"] = next(steps)
+        state["inputs"] = next(steps)
         return ""
     monkeypatch.setattr(calib, "ask", fake_ask)
-    a = type("A", (), {"url": url, "client_id": None, "what": "light", "seconds": 0.15})()
+    a = type("A", (), {"url": url, "client_id": None, "what": "light", "seconds": 0.3, "ignore_inputs": "0"})()
     assert await calib.run(a) == 0
     cal = [m for m in log if m.get("op") == "calibrate"]
     assert cal[0]["light_channels"] == [0, 1, 2] and "save" not in cal[0]
-    assert cal[-1]["light_channels"] == [0, 2, 1] and cal[-1]["light_dark"] == [88, 250, 252]
-    assert cal[-1]["light_bright"] == [3, 19, 19] and cal[-1]["save"] is True
+    assert {tuple(m["light_channels"]) for m in cal[1:-1]} == {(0, 1, 2), (3, 1, 2)}   # all four inputs scanned
+    assert cal[-1]["light_channels"] == [3, 2, 1] and cal[-1]["light_dark"] == [252, 250, 252]
+    assert cal[-1]["light_bright"] == [13, 19, 19] and cal[-1]["save"] is True
     assert not {"drive", "move", "steer", "resume", "set_speed"} & {m.get("op") for m in log}
 
 
@@ -679,7 +699,8 @@ async def test_calib_light_does_not_restore_after_a_save(aiohttp_client, monkeyp
     monkeypatch.setattr(calib, "ask", fake_ask)
     assert await calib.run(_light_args(url)) == 0
     cal = [m for m in log if m.get("op") == "calibrate"]
-    assert cal[-1]["save"] is True and len(cal) == 2
+    assert cal[-1]["save"] is True                                   # the save is the last command
+    assert not [m for m in cal if m.get("light_channels") == [0, 2, 1] and not m.get("save")]   # no restore
 
 
 def test_calibrate_ack_reports_previous_values_and_reverts_a_failed_save():

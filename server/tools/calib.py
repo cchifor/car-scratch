@@ -9,11 +9,12 @@
       For each speed: the car drives forward for --ms, you measure the distance with a tape and type it in (cm).
       Prints the `speed_table` entries (duty % -> cm/s) to put in ~/.config/car-scratch/calibration.json.
 
-  python3 -m tools.calib --url ... light [--seconds 2]
+  python3 -m tools.calib --url ... light [--seconds 2] [--ignore-inputs 0]
       Guided light-sensor calibration. Asks for room light, then a torch on the LEFT, MIDDLE and RIGHT sensor
-      in turn, works out which PCF8591 input each sensor is wired to (`light_channels`) and the room and
-      torch levels (`light_dark`, `light_bright`, one per sensor), and saves them on the car.
-      Assumes the three connected sensors are on inputs 0..2 (input 3 is not connected on this car).
+      in turn, works out which PCF8591 input (0..3) each sensor is wired to (`light_channels`) and the room and
+      torch levels (`light_dark`, `light_bright`, one per sensor), and saves them on the car. All four inputs
+      are sampled (three at a time, two temporary maps per step). This car: left = 3, middle = 2, right = 1;
+      input 0 is a light sensor on the converter board itself, so run it with --ignore-inputs 0.
 
   python3 -m tools.calib --url ... line [--seconds 2]
       Guided line-follower calibration (needs `line_enabled` true in calibration.json). Reads the car on white
@@ -111,14 +112,18 @@ def medians(frames: list[list[float]]) -> list[float]:
     return [statistics.median(col) for col in zip(*frames)]
 
 
-def infer_light(room: list[float], torch: dict[str, list[float]]) -> dict:
-    """room: median of the three slots with no torch; torch[pos]: medians with the torch on that sensor.
-    The slots are the PCF8591 inputs 0, 1, 2 (what the car reports after `light_channels=[0, 1, 2]`).
-    Returns the calibrate fields; raises CalibError when a torch did not clearly light exactly one input."""
+def infer_light(room: list[float], torch: dict[str, list[float]], ignore: tuple[int, ...] = ()) -> dict:
+    """room: median of every PCF8591 input (index = input number) with no torch; torch[pos]: the same with the
+    torch on that sensor. Inputs in `ignore` are never chosen (e.g. a light sensor on the converter board itself,
+    which a torch close to the real sensors also lights). Returns the calibrate fields; raises CalibError when a
+    torch did not clearly light exactly one input."""
+    candidates = [i for i in range(len(room)) if i not in ignore]
+    if len(candidates) < 3:
+        raise CalibError(f"only inputs {candidates} are left to choose from; ignore fewer inputs")
     channels = []
     for pos in POSITIONS:
         drops = [r - t for r, t in zip(room, torch[pos])]
-        best = max(range(len(drops)), key=lambda i: drops[i])
+        best = max(candidates, key=lambda i: drops[i])
         if drops[best] < MIN_LIGHT_DROP:
             raise CalibError(f"the torch on the {pos} sensor changed no input by {MIN_LIGHT_DROP} or more "
                              f"(drops {[round(d) for d in drops]}); hold it closer and retry")
@@ -175,14 +180,32 @@ async def _save(c: Client, fields: dict) -> int:
     return 1
 
 
-async def light(c: Client, seconds: float) -> int:
-    reply = await c.cmd("calibrate", light_channels=[0, 1, 2])     # slots = inputs 0, 1, 2 (live, not saved)
+# The car reads three PCF8591 inputs at a time (light_channels); these two temporary maps cover all four.
+SCAN_MAPS = ([0, 1, 2], [3, 1, 2])
+
+
+async def sample_inputs(c: Client, seconds: float) -> list[float]:
+    """Median raw value of each of the four PCF8591 inputs, sampling under each SCAN_MAPS map in turn."""
+    vals: list[Optional[float]] = [None] * 4
+    for m in SCAN_MAPS:
+        if not _reply_ok(await c.cmd("calibrate", light_channels=m)):
+            raise CalibError("the car refused the temporary input map")
+        await asyncio.sleep(0.3)                          # telemetry catches up with the new map
+        med = medians(await sample_for(c, "light", seconds / 2))
+        for slot, inp in enumerate(m):
+            if vals[inp] is None:
+                vals[inp] = med[slot]
+    return [float(v) for v in vals]
+
+
+async def light(c: Client, seconds: float, ignore: tuple[int, ...] = ()) -> int:
+    reply = await c.cmd("calibrate", light_channels=[0, 1, 2])     # learn the current map (live, not saved)
     if not _reply_ok(reply):
         return 1
     original = (reply.get("previous") or {}).get("light_channels")
     saved = False
     try:
-        rc = await _light_steps(c, seconds)
+        rc = await _light_steps(c, seconds, ignore)
         saved = rc == 0
         return rc
     finally:
@@ -203,18 +226,18 @@ async def _restore(c: Client, **fields) -> None:
               + ": set it again with calib, or restart the service (the saved file is unchanged)", flush=True)
 
 
-async def _light_steps(c: Client, seconds: float) -> int:
+async def _light_steps(c: Client, seconds: float, ignore: tuple[int, ...] = ()) -> int:
     await asyncio.sleep(0.3)
     await ask("light: room lighting as normal, nothing shining on the sensors. Enter to sample > ")
     try:
-        room = medians(await sample_for(c, "light", seconds))
-        print(f"  room (inputs 0,1,2): {[round(v) for v in room]}", flush=True)
+        room = await sample_inputs(c, seconds)
+        print(f"  room (inputs 0,1,2,3): {[round(v) for v in room]}", flush=True)
         torch: dict[str, list[float]] = {}
         for pos in POSITIONS:
             await ask(f"hold the torch close on the {pos.upper()} sensor, Enter to sample > ")
-            torch[pos] = medians(await sample_for(c, "light", seconds))
-            print(f"  torch {pos}: {[round(v) for v in torch[pos]]}", flush=True)
-        fields = infer_light(room, torch)
+            torch[pos] = await sample_inputs(c, seconds)
+            print(f"  torch {pos} (inputs 0,1,2,3): {[round(v) for v in torch[pos]]}", flush=True)
+        fields = infer_light(room, torch, ignore)
     except CalibError as e:
         print(f"not saved: {e}", flush=True)
         return 1
@@ -254,7 +277,8 @@ async def run(a: argparse.Namespace) -> int:
         if a.what == "trim":
             return await trim(c)
         if a.what == "light":
-            return await light(c, getattr(a, "seconds", 2.0))
+            ignore = tuple(int(x) for x in str(getattr(a, "ignore_inputs", "") or "").split(",") if x.strip())
+            return await light(c, getattr(a, "seconds", 2.0), ignore)
         if a.what == "line":
             return await line(c, getattr(a, "seconds", 2.0))
         return await speed(c, [int(x) for x in a.speeds.split(",")], a.ms, a.floor, a.ceiling)
@@ -267,7 +291,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     sub = p.add_subparsers(dest="what", required=True)
     sub.add_parser("trim")
     for name in ("light", "line"):
-        sub.add_parser(name).add_argument("--seconds", type=float, default=2.0)
+        sp = sub.add_parser(name)
+        sp.add_argument("--seconds", type=float, default=2.0)
+        if name == "light":
+            sp.add_argument("--ignore-inputs", default="",
+                            help="comma-separated PCF8591 inputs never to choose, e.g. 0 for a light sensor on the "
+                                 "converter board itself (this car)")
     s = sub.add_parser("speed")
     s.add_argument("--speeds", default="30,40,50,60,80,100")
     s.add_argument("--ms", type=int, default=1500)
