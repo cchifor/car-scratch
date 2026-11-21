@@ -20,7 +20,7 @@
 
 .header {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
     padding: 0.25rem 0.5rem;
@@ -55,6 +55,36 @@
 }
 
 .mode-active {
+    background: #455A64;
+    color: #FFFFFF;
+}
+
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background-color: #FFFFFF;
+    border-bottom: 1px solid hsla(0, 0%, 85%, 1);
+}
+
+.tool-button {
+    min-height: 44px;
+    min-width: 48px;
+    padding: 0 0.75rem;
+    border: 2px solid #455A64;
+    border-radius: 0.5rem;
+    background: #FFFFFF;
+    color: #263238;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: bold;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.tool-button[aria-pressed="true"] {
     background: #455A64;
     color: #FFFFFF;
 }

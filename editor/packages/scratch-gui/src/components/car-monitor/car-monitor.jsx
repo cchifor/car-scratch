@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 
+import {readSetting, writeSetting} from '../../lib/picar/storage.js';
 import {useCarState} from '../../lib/picar/use-car-link.js';
 import messages from './messages.js';
 import MonitorBanners, {ObstacleOverlay} from './monitor-banners.jsx';
@@ -13,6 +14,9 @@ import StatusChip from './status-chip.jsx';
 import styles from './car-monitor.css';
 
 const OBSTACLE_BANNER_MS = 2000;
+const VIEW_KEY = 'picar.monitorView';
+
+const initialView = () => (readSetting(VIEW_KEY) === 'follow' ? 'follow' : 'room');
 
 const worldObject = world => (world && typeof world === 'object' ? world : null);
 // "Arena (two obstacles)" -> "Arena" so the header stays a single row on a small iPad.
@@ -67,12 +71,54 @@ ModeSwitch.propTypes = {
 };
 
 /**
+ * Room | Follow switch.
+ * @param {object} props - props
+ * @param {string} props.view - 'room' or 'follow'
+ * @param {function(string): void} props.onChange - called with the new view
+ * @returns {React.Element} the switch
+ */
+const ViewSwitch = ({view, onChange}) => {
+    const intl = useIntl();
+    const pick = useCallback(next => () => onChange(next), [onChange]);
+    return (
+        <div
+            className={styles.modeSwitch}
+            role="group"
+            aria-label={intl.formatMessage(messages.viewAria)}
+        >
+            <button
+                type="button"
+                className={classNames(styles.modeButton, {[styles.modeActive]: view === 'room'})}
+                aria-pressed={view === 'room'}
+                onClick={pick('room')}
+            >
+                <FormattedMessage {...messages.viewRoom} />
+            </button>
+            <button
+                type="button"
+                className={classNames(styles.modeButton, {[styles.modeActive]: view === 'follow'})}
+                aria-pressed={view === 'follow'}
+                onClick={pick('follow')}
+            >
+                <FormattedMessage {...messages.viewFollow} />
+            </button>
+        </div>
+    );
+};
+
+ViewSwitch.propTypes = {
+    onChange: PropTypes.func.isRequired,
+    view: PropTypes.string.isRequired
+};
+
+/**
  * The Pi Car pane: header (mode, world, status, E-STOP), the animated canvas and the banners.
  * @param {object} props - props
  * @param {object} props.link - the CarLink (docs/contracts.md section 5)
+ * @param {?object} [props.vm] - the scratch-vm (used to load the Pen extension for the stage mirror)
  * @returns {React.Element} the monitor
  */
-const CarMonitor = ({link}) => {
+const CarMonitor = ({link, vm}) => {
     const intl = useIntl();
     const state = useCarState(link);
     const [flags, setFlags] = useState(() => telemetryFlags(link.getTelemetry()));
@@ -81,6 +127,8 @@ const CarMonitor = ({link}) => {
     const [worldEvent, setWorldEvent] = useState(null);
     const [powerOpen, setPowerOpen] = useState(false);
     const [controllerPresent, setControllerPresent] = useState(null);
+    const [view, setView] = useState(initialView);
+    const [clearToken, setClearToken] = useState(0);
     const flashTimer = useRef(null);
 
     // Coarse flags from telemetry: React state changes only when a flag changes, never per frame.
@@ -147,6 +195,21 @@ const CarMonitor = ({link}) => {
         }
     }, [link, intl, controllerPresent]);
 
+    const onView = useCallback(next => {
+        setView(next);
+        writeSetting(VIEW_KEY, next);
+    }, []);
+    const onClearMap = useCallback(() => setClearToken(n => n + 1), []);
+    const onResetPosition = useCallback(() => link.send('reset_pose', {}), [link]);
+    const onStageMirror = useCallback(() => {
+        const current = link.getState();
+        const turnOn = !(current && current.stageMirror);
+        if (turnOn && vm && vm.extensionManager && !vm.extensionManager.isExtensionLoaded('pen')) {
+            vm.extensionManager.loadExtensionURL('pen');
+        }
+        link.setStageMirror(turnOn);
+    }, [link, vm]);
+
     const togglePower = useCallback(() => setPowerOpen(open => !open), []);
 
     const onWorldChange = useCallback(event => {
@@ -158,6 +221,9 @@ const CarMonitor = ({link}) => {
     const world = isSim ? (worldObject(state.world) || worldObject(worldEvent)) : null;
     const worlds = (state && state.worlds) || [];
     const currentWorld = worldId(state && state.world) || worldId(worldEvent);
+    const canDrive = Boolean(state) && state.role !== 'viewer';
+    const hasMirror = typeof link.setStageMirror === 'function';
+    const mirrorOn = Boolean(state && state.stageMirror);
     const banners = computeBanners({state, flags, obstacleFlash, lineFault});
 
     return (
@@ -188,6 +254,12 @@ const CarMonitor = ({link}) => {
                         ))}
                     </select>
                 ) : null}
+                {state ? (
+                    <ViewSwitch
+                        view={view}
+                        onChange={onView}
+                    />
+                ) : null}
                 <div className={styles.headerRight}>
                     <PowerChip
                         flags={flags}
@@ -196,6 +268,40 @@ const CarMonitor = ({link}) => {
                     />
                     <StatusChip state={state} />
                 </div>
+            </div>
+            <div
+                className={styles.toolbar}
+                role="group"
+                aria-label={intl.formatMessage(messages.toolsAria)}
+            >
+                <button
+                    type="button"
+                    className={styles.toolButton}
+                    onClick={onClearMap}
+                >
+                    <FormattedMessage {...messages.clearMap} />
+                </button>
+                {canDrive ? (
+                    <button
+                        type="button"
+                        className={styles.toolButton}
+                        onClick={onResetPosition}
+                    >
+                        <FormattedMessage {...messages.resetPosition} />
+                    </button>
+                ) : null}
+                {hasMirror ? (
+                    <button
+                        type="button"
+                        className={styles.toolButton}
+                        aria-pressed={mirrorOn}
+                        onClick={onStageMirror}
+                    >
+                        <FormattedMessage {...messages.stageMirror} />
+                        {' '}
+                        <FormattedMessage {...(mirrorOn ? messages.stageMirrorOn : messages.stageMirrorOff)} />
+                    </button>
+                ) : null}
             </div>
             {powerOpen && flags && flags.powerSource ? <PowerDetails flags={flags} /> : null}
             <MonitorBanners
@@ -208,7 +314,9 @@ const CarMonitor = ({link}) => {
                     geometry={state && state.geometry}
                     world={world}
                     showLine={Boolean(caps.line) || lineFault}
-                    resetKey={`${state ? state.mode : ''}|${state ? state.connection : ''}`}
+                    resetKey={`${state ? state.mode : ''}|${state ? state.connection : ''}|${currentWorld}`}
+                    viewMode={view}
+                    clearToken={clearToken}
                 />
                 <ObstacleOverlay banners={banners} />
             </div>
@@ -226,8 +334,15 @@ CarMonitor.propTypes = {
         removeListener: PropTypes.func.isRequired,
         send: PropTypes.func,
         setMode: PropTypes.func,
+        setStageMirror: PropTypes.func,
         subscribe: PropTypes.func.isRequired
-    }).isRequired
+    }).isRequired,
+    vm: PropTypes.shape({
+        extensionManager: PropTypes.shape({
+            isExtensionLoaded: PropTypes.func,
+            loadExtensionURL: PropTypes.func
+        })
+    })
 };
 
 export default CarMonitor;

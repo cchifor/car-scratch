@@ -14,7 +14,13 @@ import {useCarLink} from '../lib/picar/use-car-link.js';
  */
 const CarMonitor = ({vm}) => {
     const link = useCarLink(vm);
-    return link ? <CarMonitorComponent link={link} /> : null;
+    if (!link) return null;
+    return (
+        <CarMonitorComponent
+            link={link}
+            vm={vm}
+        />
+    );
 };
 
 CarMonitor.propTypes = {

@@ -31,6 +31,51 @@ const messages = defineMessages({
         defaultMessage: 'Simulator world',
         description: 'Accessibility label of the simulator world picker'
     },
+    viewRoom: {
+        id: 'picar.monitor.viewRoom',
+        defaultMessage: 'Room',
+        description: 'View switch: fixed camera showing the whole room'
+    },
+    viewFollow: {
+        id: 'picar.monitor.viewFollow',
+        defaultMessage: 'Follow',
+        description: 'View switch: camera follows the car'
+    },
+    viewAria: {
+        id: 'picar.monitor.viewAria',
+        defaultMessage: 'Room view or follow view',
+        description: 'Accessibility label of the Room / Follow switch'
+    },
+    clearMap: {
+        id: 'picar.monitor.clearMap',
+        defaultMessage: 'Clear map',
+        description: 'Button that erases the obstacle map and the trail'
+    },
+    resetPosition: {
+        id: 'picar.monitor.resetPosition',
+        defaultMessage: 'Reset position',
+        description: 'Button that sets the car position back to the start (0, 0)'
+    },
+    stageMirror: {
+        id: 'picar.monitor.stageMirror',
+        defaultMessage: 'Stage mirror',
+        description: 'Toggle that mirrors the car on the Scratch stage'
+    },
+    stageMirrorOn: {
+        id: 'picar.monitor.stageMirrorOn',
+        defaultMessage: 'on',
+        description: 'Stage mirror toggle state: on'
+    },
+    stageMirrorOff: {
+        id: 'picar.monitor.stageMirrorOff',
+        defaultMessage: 'off',
+        description: 'Stage mirror toggle state: off'
+    },
+    toolsAria: {
+        id: 'picar.monitor.toolsAria',
+        defaultMessage: 'Map tools',
+        description: 'Accessibility label of the row of map buttons'
+    },
     monitorAria: {
         id: 'picar.monitor.aria',
         defaultMessage: 'Car monitor',
