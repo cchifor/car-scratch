@@ -1,0 +1,52 @@
+#!/bin/sh
+# car - one short command for the car's tools. Installed on the car as /usr/local/bin/car by pi-setup.sh.
+# Works for the car user (c4) and for the admin account (carops, which uses sudo where needed).
+#
+#   car                     live dashboard (view only)              car drive [--force]   dashboard + keyboard
+#   car status [--json]     one snapshot                            car estop | reset | resume | stop
+#   car sensors             live line follower + light readings     car calib light|line|trim [...]
+#   car logs [journalctl options]   the car server's log (default: last 100 lines, follow)
+#   car restart             restart the car server                  car version
+#   car wifi ...            hotspot control (sudo car-wifi ...)     car help
+set -eu
+
+CAR_USER=c4
+SERVER_DIR=/home/$CAR_USER/car-scratch/current/server
+URL=ws://127.0.0.1:8080/ws
+
+as_car_user() {   # run "$@" as the car user, with its systemd user manager reachable
+    if [ "$(id -un)" = "$CAR_USER" ]; then
+        "$@"
+    else
+        uid=$(id -u "$CAR_USER")
+        sudo -u "$CAR_USER" XDG_RUNTIME_DIR="/run/user/$uid" "$@"
+    fi
+}
+
+carctl() { PYTHONPATH=$SERVER_DIR exec python3 -m tools.carctl --url "$URL" "$@"; }
+
+cmd=${1:-watch}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    watch|dash) carctl watch "$@" ;;
+    drive|status|estop|reset|resume|stop|steer|move|events) carctl "$cmd" "$@" ;;
+    sensors|monitor)
+        # pauses and restarts the car server, which runs under the car user's systemd
+        as_car_user python3 "$SERVER_DIR/tools/sensor_monitor.py" "$@" ;;
+    calib) PYTHONPATH=$SERVER_DIR exec python3 -m tools.calib --url "$URL" "$@" ;;
+    logs|log)
+        [ $# -eq 0 ] && set -- -n 100 -f
+        if [ "$(id -un)" = "$CAR_USER" ]; then
+            exec journalctl --user -u car-scratch "$@"
+        else
+            exec sudo journalctl _SYSTEMD_USER_UNIT=car-scratch.service "$@"
+        fi ;;
+    restart)
+        as_car_user systemctl --user restart car-scratch
+        echo "car server restarted" ;;
+    version)
+        exec python3 -c 'import json,urllib.request; s=json.load(urllib.request.urlopen("http://127.0.0.1:8080/api/status",timeout=3)); print("Car Scratch", s["version"], s["sha"], "| car", s["car"]["backend"], "| sensors", ", ".join(k for k,v in s["car"]["capabilities"].items() if v))' ;;
+    wifi) exec sudo car-wifi "$@" ;;
+    help|-h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) echo "car: unknown command '$cmd' (try: car help)" >&2; exit 2 ;;
+esac

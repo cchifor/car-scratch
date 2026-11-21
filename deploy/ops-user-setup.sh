@@ -5,11 +5,12 @@
 #     sudo sh ops-user-setup.sh /tmp/carops.pub        # public key(s) allowed to log in as carops
 # Idempotent; prints what it changed.  Remove the account again:
 #     sudo sh ops-user-setup.sh --remove
-# env: OPS_USER (default carops), OPS_FROM (SSH source networks for the key, default 192.168.0.0/23 = home LAN)
+# env: OPS_USER (default carops), OPS_FROM (SSH source networks for the key, default the home LAN
+#      192.168.0.0/23 and the car's own hotspot 10.42.0.0/24, see docs/wifi.md)
 set -eu
 
 OPS_USER=${OPS_USER:-carops}
-OPS_FROM=${OPS_FROM:-192.168.0.0/23}
+OPS_FROM=${OPS_FROM:-192.168.0.0/23,10.42.0.0/24}
 SUDOERS=/etc/sudoers.d/090-car-scratch-ops
 CHANGED=""
 note() { CHANGED="${CHANGED}  - $1

@@ -28,6 +28,7 @@ browser. See [docs/safety.md](docs/safety.md).
 | `server/tools/` | `carctl.py` (terminal dashboard and keyboard driving, [docs/carctl.md](docs/carctl.md)), `wsclient.py` (drive the car from a terminal), `calib.py` |
 | `examples/` | example project generator (`tools/pack.py`) and definitions |
 | `e2e/` | Playwright tests (Chromium + WebKit iPad profiles) |
+| `workstation/` | the `car` shortcut for your computer (`car.ps1` for PowerShell, `car` for bash), see [docs/carctl.md](docs/carctl.md#shortcuts-the-car-command) |
 | `deploy/` | `deploy.sh`, `pi-setup.sh`, systemd units, `pi-tune.sh` / `pi-slim.sh` (headless OS, [docs/pi-tune.md](docs/pi-tune.md)), `wifi-setup.sh` (direct WiFi hotspot, [docs/wifi.md](docs/wifi.md)), `calibration/picar.json` |
 | `docs/` | [index](docs/README.md), [architecture](docs/architecture.md), [components](docs/components.md), [protocol](docs/protocol.md), [contracts](docs/contracts.md), [decisions](docs/decisions.md), [safety](docs/safety.md), [iPad](docs/ipad.md), [calibration](docs/calibration.md), [on-car checklist](docs/on-car-checklist.md), [kids' guide](docs/kids-guide.md), [carctl](docs/carctl.md), [WiFi hotspot](docs/wifi.md), [Pi tuning](docs/pi-tune.md) |
 

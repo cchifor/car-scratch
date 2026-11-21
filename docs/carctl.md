@@ -50,6 +50,37 @@ last error 22:13:30 drive: hold: motion is on hold
 Up/Down speed  Left/Right steer  C center  Space stop  R resume  E E-STOP  X reset  Q quit
 ```
 
+## Shortcuts: the `car` command
+
+One short command covers every tool, on the car and on your computer.
+
+| Command | What it does |
+|---|---|
+| `car` | live dashboard (`carctl watch`, view only) |
+| `car drive [--force]` | dashboard + keyboard driving |
+| `car status [--json]`, `car estop`, `car reset`, `car resume`, `car stop` | one-shot commands |
+| `car sensors` | live line follower and light readings (`sensor_monitor.py`; pauses the car server meanwhile) |
+| `car calib light\|line\|trim` | the guided calibrations ([calibration.md](calibration.md)) |
+| `car logs [journalctl options]` | the car server's log (default: last 100 lines, then follow) |
+| `car restart`, `car version` | restart the car server; show its version and sensors |
+| `car wifi ...` | hotspot control: `status`, `test-hotspot 10`, `password`, modes ([wifi.md](wifi.md)) |
+| `car web` | (computer only) open the app in the browser |
+| `car ssh`, `car admin` | (computer only) a shell on the car as `c4` / as the admin account `carops` |
+| `car deploy [--dry-run]` | (computer only) deploy this checkout to the car |
+
+**On the car** it is `/usr/local/bin/car`, a root-owned copy of [`deploy/car`](../deploy/car) installed by
+`pi-setup.sh` (re-run it after a deploy that changes `deploy/car`). It works for `c4` and for `carops`.
+
+**On your computer** the same commands run the car's `car` over SSH (`c4@`, and `carops@` for `car wifi`),
+using `$CAR_HOST` (default `picar.local`; `10.42.0.1` when you are on the car's hotspot):
+
+- Windows PowerShell: [`workstation/car.ps1`](../workstation/car.ps1). Add the `workstation` folder to your
+  PATH, or put `Set-Alias car C:\path\to\car-scratch\workstation\car.ps1` in your `$PROFILE`.
+- Linux, macOS, Git Bash: [`workstation/car`](../workstation/car): `ln -s "$PWD/workstation/car" ~/.local/bin/car`.
+
+The admin account accepts SSH from the home network and from the car's hotspot (`10.42.0.0/24`), so
+`car wifi` keeps working when you are connected to the car directly.
+
 ## Running it
 
 On the car (the launcher is installed by `deploy/pi-setup.sh`; `-t` is needed for the keyboard and the full screen):

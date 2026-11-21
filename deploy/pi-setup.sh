@@ -142,6 +142,19 @@ then
     note "installed /usr/local/bin/carctl (root-owned)"
 fi
 
+# 6c. `car` (one short command for every tool: car, car drive, car sensors, car logs, car wifi ...; deploy/car).
+#     A root-owned copy of the deployed script, like safe_stop.py above: re-run pi-setup.sh after a deploy that
+#     changes it.
+SRC_CAR="$HOME_DIR/car-scratch/current/car"
+if [ -f "$SRC_CAR" ]; then
+    if ! cmp -s "$SRC_CAR" /usr/local/bin/car 2>/dev/null; then
+        install -m 0755 -o root -g root "$SRC_CAR" /usr/local/bin/car
+        note "installed /usr/local/bin/car (root-owned)"
+    fi
+else
+    echo "note: no deployed release with the 'car' shortcut yet; re-run pi-setup.sh after the next deploy" >&2
+fi
+
 # 7. hardware access groups (informational)
 for g in gpio i2c; do
     id -nG "$CAR_USER" | tr ' ' '\n' | grep -qx "$g" || echo "WARNING: $CAR_USER is not in group $g"

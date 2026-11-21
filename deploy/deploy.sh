@@ -62,9 +62,9 @@ STAGE=out/stage
 run rm -rf "$STAGE"
 run mkdir -p "$STAGE"
 if [ "$DRY" -eq 1 ]; then
-    say "    + git archive HEAD server deploy/car-scratch.service | tar -x -C $STAGE"
+    say "    + git archive HEAD server deploy/car-scratch.service deploy/car | tar -x -C $STAGE"
 else
-    git archive HEAD server deploy/car-scratch.service | tar -x -C "$STAGE"
+    git archive HEAD server deploy/car-scratch.service deploy/car | tar -x -C "$STAGE"
     printf 'CAR_SCRATCH_SHA=%s\n' "$SHA" > "$STAGE/REVISION.env"
 fi
 say "    (REVISION.env: CAR_SCRATCH_SHA=$SHA)"
@@ -75,7 +75,8 @@ if [ ! -d out/www ]; then
 fi
 
 # The editor bundle must be built from the very commit being deployed (never a stale out/www with a newer server).
-BUILT=$(head -n 1 out/www/build-sha.txt 2>/dev/null | tr -d ' ' || true)
+BUILT=$(head -n 1 out/www/build-sha.txt 2>/dev/null | tr -d ' 
+' || true)
 if [ -z "$BUILT" ] || [ "$BUILT" != "$SHA" ]; then
     MSG="out/www was built from '${BUILT:-unknown (no build-sha.txt)}', not from $SHA. Rebuild the editor:
   docker buildx build -f docker/editor.Dockerfile --target www --build-arg BUILD_SHA=\$(git rev-parse --short=12 HEAD) --output type=local,dest=out/www ."
@@ -95,6 +96,7 @@ if [ -d out/examples ] || [ "$DRY" -eq 1 ]; then run_rsync out/examples/ "$TARGE
 run_rsync out/source/ "$TARGET:$REL/source/"
 run_rsync "$STAGE/REVISION.env" "$TARGET:$REL/REVISION.env"
 run_rsync "$STAGE/deploy/car-scratch.service" "$TARGET:$REL/car-scratch.service"   # installed in step 4
+run_rsync "$STAGE/deploy/car" "$TARGET:$REL/car"   # the `car` shortcut; pi-setup.sh installs a root-owned copy
 remote "touch $REL"
 
 # --- 4. switch + restart ---------------------------------------------------------------------------------
