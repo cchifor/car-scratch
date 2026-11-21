@@ -146,15 +146,21 @@ if [ -f "$CMDLINE" ] && grep -qw splash "$CMDLINE"; then
 fi
 
 # ------------------------------------------------------------------------------------------ 7. journald
-if [ ! -f "$JOURNALD" ]; then
+# Persistent (Raspberry Pi OS ships Storage=volatile to spare the SD card; a car needs the logs of the boot that
+# went wrong, e.g. a reboot that hung), capped at 64 MB. Our drop-in sorts after 40-rpi-volatile-storage.conf.
+JOURNALD_CONF='[Journal]
+Storage=persistent
+SystemMaxUse=64M
+RuntimeMaxUse=32M'
+if [ "$(cat "$JOURNALD" 2>/dev/null)" != "$JOURNALD_CONF" ]; then
     if [ "$MODE" = dry ]; then
-        echo "  would: write $JOURNALD (SystemMaxUse=64M)"
+        echo "  would: write $JOURNALD (Storage=persistent, SystemMaxUse=64M)"
     else
+        [ -f "$JOURNALD" ] || record "journald"
         mkdir -p "$(dirname "$JOURNALD")"
-        printf '[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n' > "$JOURNALD"
+        printf '%s\n' "$JOURNALD_CONF" > "$JOURNALD"
     fi
-    record "journald"
-    note "journal capped at 64 MB on the SD card"
+    note "journal kept across reboots, capped at 64 MB on the SD card"
 fi
 
 [ "$MODE" = apply ] && systemctl daemon-reload

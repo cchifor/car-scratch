@@ -41,6 +41,39 @@ Connect (its remote shell), log rotation, fstrim.
 | Car user's services | 10 | 3 (car-scratch, dbus, rpi-connect) |
 | Memory used | 371 MB | 182 MB |
 
+## Removing the desktop: `pi-slim.sh`
+
+`pi-tune.sh` only switches the desktop off. [`deploy/pi-slim.sh`](../deploy/pi-slim.sh) removes it: X and
+Wayland, the desktop session, browsers, desktop apps, printing, Bluetooth, audio and the boot splash.
+
+```
+scp deploy/pi-slim.sh carops@picar.local:/tmp/
+ssh carops@picar.local sudo sh /tmp/pi-slim.sh --dry-run   # what apt would remove
+ssh carops@picar.local "sudo nohup setsid sh /tmp/pi-slim.sh > /var/log/pi-slim.log 2>&1 &"   # detached
+```
+
+Several packages the car needs are installed on this image only as desktop dependencies (`openssh-server`,
+`python3`, `iw`, `dnsmasq-base`, `netplan.io`, `libnss-mdns`), so a plain purge with autoremove would take
+SSH and the WiFi tooling with it. The script first marks everything the car needs as manually installed,
+simulates the purge, and refuses if any of it would still go. Raspberry Pi Connect is switched to
+`rpi-connect-lite` (remote shell; screen sharing needs the desktop). Run it detached: on a Pi 3 it takes
+several minutes and must not die with an SSH session. There is no `--revert`: the desktop comes back with
+`sudo apt install rpd-wayland-core rpd-x-core rpd-preferences rpd-applications rpd-utilities` (needs the
+internet).
+
+Measured on the car (2026-11-21): 813 packages removed, installed packages 1652 -> 840, disk used
+7.1 GB -> 4.8 GB. SSH, NetworkManager, avahi, `iw`, `dnsmasq`, `vcgencmd` and the car server stayed up.
+Boot time did not change (30.7 s): NetworkManager dominates (below).
+
+**The reboot right after the purge hung**; the car came back with a power cycle and has booted cleanly since.
+The cause is unknown, because the journal was memory-only (Raspberry Pi OS ships `Storage=volatile`), so the
+logs of that boot were lost. Two changes make this diagnosable and self-healing:
+
+- `pi-tune.sh` makes the journal persistent (still capped at 64 MB): `Storage=persistent` in
+  `/etc/systemd/journald.conf.d/car-scratch.conf`. After a failed boot, `journalctl -b -1` shows what happened.
+- `pi-setup.sh` sets `RebootWatchdogSec=60` next to `RuntimeWatchdogSec=10`: a reboot that hangs is forced by
+  the hardware watchdog after 60 s instead of systemd's default 10 minutes.
+
 ## Next: NetworkManager's 15 s
 
 What is left of the boot is mostly NetworkManager (15.4 s): with this OS's netplan integration it runs the

@@ -78,10 +78,11 @@ write_file() {   # write_file <path> [mode] ; content on stdin ; returns 0 when 
 if write_file /etc/systemd/system.conf.d/car-scratch-watchdog.conf <<'CONF'
 [Manager]
 RuntimeWatchdogSec=10
+RebootWatchdogSec=60
 CONF
 then
     systemctl daemon-reexec
-    note "hardware watchdog on: /etc/systemd/system.conf.d/car-scratch-watchdog.conf (RuntimeWatchdogSec=10)"
+    note "hardware watchdog on: /etc/systemd/system.conf.d/car-scratch-watchdog.conf (RuntimeWatchdogSec=10; a reboot that hangs is forced after 60 s instead of systemd's 10 min)"
 fi
 
 # 6. boot-time motor zeroing (system unit, runs as root before the user service exists).
