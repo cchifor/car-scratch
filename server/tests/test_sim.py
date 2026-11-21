@@ -109,7 +109,8 @@ def test_light_is_lower_raw_when_closer_and_blocked_by_walls():
     near = b.read_light()
     b.teleport(-100, 40, 90)
     far = b.read_light()
-    assert near[1] < far[1] and near[1] < 150 and far[1] > 190
+    # lamp intensity 10 (2026-11-21: seen from the start pose, ~2 m away): far is dim, near is saturated bright
+    assert near[1] < far[1] and near[1] < 150 and 160 < far[1] < 200
     b.teleport(40, 40, 270)                              # facing away
     assert b.read_light() == [200, 200, 200]
     assert safety.brightest([safety.brightness(v, CAL) for v in near]) == "middle"

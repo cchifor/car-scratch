@@ -80,5 +80,60 @@ if (sb3s.length === 0) {
             vm.quit();
             t.end();
         });
+
+        // On-car finding 2026-11-21: the generator wrote menu fields as `dir`/`steer`/..., the VM reads the
+        // argument name (`DIR`/`STEER`/...), so every example drove forward and never steered. Check every
+        // picar block's arguments against the extension's own definition, including the menu values.
+        test(`example ${file}: every Pi Car block argument matches the extension definition`, async t => {
+            const vm = new VirtualMachine();
+            vm.attachStorage(makeTestStorage());
+            await vm.loadProject(readFileToBuffer(path.join(DIR, file)));
+            const cat = vm.runtime._blockInfo.find(c => c.id === 'picar');
+            t.ok(cat, 'picar category info');
+            const defs = {};
+            for (const b of cat.blocks) if (b.info && b.info.opcode) defs[`picar_${b.info.opcode}`] = b.info;
+            const menuValues = name => {
+                const m = cat.menuInfo[name];
+                return (Array.isArray(m.items) ? m.items : []).map(it => (typeof it === 'object' ? it.value : it));
+            };
+            let checked = 0;
+            let picarBlocks = 0;
+            for (const target of vm.runtime.targets) {
+                const blocks = target.blocks._blocks;
+                for (const block of Object.values(blocks)) {
+                    const info = defs[block.opcode];
+                    if (!info) continue;
+                    picarBlocks++;
+                    const where = `${target.getName()} ${block.opcode}`;
+                    const args = info.arguments || {};
+                    for (const name of Object.keys(block.fields)) {
+                        t.ok(Object.prototype.hasOwnProperty.call(args, name),
+                            `${where}: field ${name} is an argument`);
+                    }
+                    for (const [arg, ai] of Object.entries(args)) {
+                        checked++;
+                        const menu = ai.menu && cat.menuInfo[ai.menu];
+                        if (menu && !menu.acceptReporters) {
+                            const f = block.fields[arg];
+                            t.ok(f, `${where}: menu field ${arg} present`);
+                            if (f) {
+                                t.ok(menuValues(ai.menu).includes(f.value),
+                                    `${where}: ${arg}=${f.value} is a menu value`);
+                            }
+                        } else {
+                            t.ok(block.inputs[arg], `${where}: input ${arg} present`);
+                            if (menu && block.inputs[arg]) {
+                                const sh = blocks[block.inputs[arg].shadow];
+                                const v = sh && sh.fields[ai.menu] && sh.fields[ai.menu].value;
+                                t.ok(menuValues(ai.menu).includes(v), `${where}: ${arg}=${v} is a menu value`);
+                            }
+                        }
+                    }
+                }
+            }
+            t.ok(picarBlocks > 0, `${picarBlocks} Pi Car blocks, ${checked} arguments checked`);
+            vm.quit();
+            t.end();
+        });
     }
 }

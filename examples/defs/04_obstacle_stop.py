@@ -3,7 +3,7 @@ from sb3 import *
 
 META = dict(id="04-obstacle-stop", title="Obstacle stop", level="beginner", needs=["ultrasonic"],
             world="corridor",
-            description="Drive forward until something is closer than 30 cm, then stop and say how far it is.")
+            description="Drive forward until something is closer than 45 cm, then stop and say how far it is.")
 
 
 def build():
@@ -13,7 +13,9 @@ def build():
         stop_distance(25),
         say("Driving until I see a wall."),
         drive("forward", 40),
-        wait_until(obstacle_closer(30)),
+        # 45 cm: the car's own safety stop (25 cm + braking distance at 40 %, about 33 cm) must not stop it
+        # first, or this would wait for ever
+        wait_until(obstacle_closer(45)),
         stop_motors(),
         say(join(join("I stopped! The wall is ", distance()), " cm away.")),
     )

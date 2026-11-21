@@ -15,10 +15,13 @@ def build():
         reset_position(),
         pen_clear(), pen_size(3), pen_color("#C62828"),
         broadcast("trail"),
+        # a little way in first, so both loops clear the walls (in the simulator's arena: and the box)
+        drive_for("forward", 40, 0.5),
+        # one loop at full steering is about 1.5 m of driving: about 5 s at 40 %
         steer("left"),
-        drive_for("forward", 40, 4),
+        drive_for("forward", 40, 5),
         steer("right"),
-        drive_for("forward", 40, 4),
+        drive_for("forward", 40, 5),
         steer("straight"),
         stop_motors(),
         say("A figure eight!"),
