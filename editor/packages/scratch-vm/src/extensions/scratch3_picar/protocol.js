@@ -38,6 +38,7 @@ const MOVE_MS_MAX = 30000;
 
 const SESSION_KEY = 'picar.clientId';
 const MODE_KEY = 'picar.mode';
+const STAGE_MIRROR_KEY = 'picar.stageMirror';
 
 /**
  * Clamp a number to [lo, hi]; NaN becomes the fallback.
@@ -104,6 +105,7 @@ module.exports = {
     MOVE_MS_MAX,
     SESSION_KEY,
     MODE_KEY,
+    STAGE_MIRROR_KEY,
     clamp,
     defaultUrl,
     estopUrl

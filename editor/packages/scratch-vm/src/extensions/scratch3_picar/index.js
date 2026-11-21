@@ -25,6 +25,11 @@ const FAR_CM = 999;
 const STEER_DEG = {left: -30, straight: 0, right: 30};
 const LINE_SENSORS = 5;
 const LIGHT_INDEX = {left: 0, middle: 1, right: 2};
+const MIRROR_MIN_CM = 0.5;
+const MIRROR_MIN_DEG = 0.5;
+const MIRROR_JUMP_CM = 50;
+const TRAIL_COLOR4F = [198 / 255, 40 / 255, 40 / 255, 1]; // #C62828
+const TRAIL_SIZE = 2;
 
 /**
  * Number from any Scratch value; NaN becomes 0, Infinity clamps.
@@ -56,6 +61,9 @@ class Scratch3PiCarBlocks {
         this._dropped = false;
         // This browser pressed E-STOP and the server's echo (event / tel) is still to come: it must not stop again.
         this._localEstopPending = false;
+        // Last mirrored sprite position {x, y} (null: the next frame is a plain move, no trail).
+        this._mirrorPrev = null;
+        this._prevMirror = false;
 
         const factory = runtime.picarLinkFactory || Scratch3PiCarBlocks.linkFactory;
         if (factory) {
@@ -72,8 +80,10 @@ class Scratch3PiCarBlocks {
             this._prevConnection = initial.connection;
             this._prevRole = initial.role;
             this._prevMode = initial.mode;
+            this._prevMirror = initial.stageMirror === true;
             this.link.on('event', evt => this._onLinkEvent(evt));
             this.link.on('state', state => this._onLinkState(state));
+            this.link.on('telemetry', tel => this._mirrorStage(tel));
             if (/[?&]picar_debug=1(&|$|#)/.test((typeof location !== 'undefined' && location.search) || '')) {
                 globalThis.__picar = {link: this.link, runtime};
             }
@@ -164,6 +174,12 @@ class Scratch3PiCarBlocks {
         this._prevConnection = state.connection;
         this._prevRole = state.role;
         this._prevMode = state.mode;
+        // No trail line across a mode switch, a reconnect or a mirror toggle.
+        if (state.mode !== prevMode || state.connection !== prev || state.connection !== 'open' ||
+            state.stageMirror !== this._prevMirror) {
+            this._mirrorPrev = null;
+        }
+        this._prevMirror = state.stageMirror;
         const wasUp = prev === 'open' || prev === 'switching';
         const down = state.connection === 'closed' || state.connection === 'reload';
         if (wasUp && down && this.armed) {
@@ -199,6 +215,50 @@ class Scratch3PiCarBlocks {
                 }
             }
         }
+    }
+
+    /**
+     * Stage mirror: move the "Car" sprite to the telemetry pose (and draw the pen trail when Pen is loaded).
+     * @param {object} tel - a tel frame
+     */
+    _mirrorStage (tel) {
+        if (!this.link || this.link.getState().stageMirror !== true) return;
+        const pose = tel && tel.pose;
+        if (!pose || typeof pose.x !== 'number' || typeof pose.y !== 'number' ||
+            !isFinite(pose.x) || !isFinite(pose.y)) return;
+        const targets = this.runtime.targets || [];
+        const car = targets.find(t => t && !t.isStage && t.isOriginal !== false &&
+            typeof t.getName === 'function' && t.getName() === 'Car');
+        if (!car) return;
+        const hasDir = typeof pose.dir === 'number' && isFinite(pose.dir);
+        const moved = Math.hypot(pose.x - car.x, pose.y - car.y) >= MIRROR_MIN_CM;
+        const turned = hasDir && Math.abs(((pose.dir - car.direction + 540) % 360) - 180) >= MIRROR_MIN_DEG;
+        const prev = this._mirrorPrev;
+        if (!moved && !turned) {
+            if (!prev) this._mirrorPrev = {x: car.x, y: car.y};
+            return;
+        }
+        if (moved) car.setXY(pose.x, pose.y);
+        if (turned) car.setDirection(pose.dir);
+        const here = {x: car.x, y: car.y};
+        if (!moved) {
+            if (!prev) this._mirrorPrev = here;
+            return;
+        }
+        this._mirrorPrev = here;
+        if (!prev) return;
+        if (Math.hypot(pose.x - prev.x, pose.y - prev.y) > MIRROR_JUMP_CM) return;
+        this._drawTrail(prev, here);
+    }
+
+    _drawTrail (from, to) {
+        const pen = this.runtime.ext_pen;
+        const renderer = this.runtime.renderer;
+        if (!pen || !renderer || typeof pen._getPenLayerID !== 'function') return;
+        const skin = pen._getPenLayerID();
+        if (skin < 0) return;
+        renderer.penLine(skin, {color4f: TRAIL_COLOR4F.slice(), diameter: TRAIL_SIZE}, from.x, from.y, to.x, to.y);
+        if (typeof this.runtime.requestRedraw === 'function') this.runtime.requestRedraw();
     }
 
     _startEventHats (event) {
@@ -518,6 +578,27 @@ class Scratch3PiCarBlocks {
                     })
                 },
                 {
+                    opcode: 'setStageMirror',
+                    blockType: BlockType.COMMAND,
+                    text: formatMessage({
+                        id: 'picar.setStageMirror',
+                        default: 'show the car moves on the stage [ONOFF]',
+                        description: 'make the Car sprite follow the real car on the stage'
+                    }),
+                    arguments: {
+                        ONOFF: {type: ArgumentType.STRING, menu: 'onoff', defaultValue: 'on'}
+                    }
+                },
+                {
+                    opcode: 'stageMirrorOn',
+                    blockType: BlockType.BOOLEAN,
+                    text: formatMessage({
+                        id: 'picar.stageMirrorOn',
+                        default: 'stage mirror on?',
+                        description: 'is the Car sprite following the real car on the stage'
+                    })
+                },
+                {
                     opcode: 'whenCarEvent',
                     blockType: BlockType.HAT,
                     isEdgeActivated: false,
@@ -711,6 +792,14 @@ class Scratch3PiCarBlocks {
 
     resetPosition () {
         if (this.link) this.link.send('reset_pose');
+    }
+
+    setStageMirror (args) {
+        if (this.link) this.link.setStageMirror(args.ONOFF !== 'off');
+    }
+
+    stageMirrorOn () {
+        return !!this.link && this.link.getState().stageMirror === true;
     }
 
     // ---- reporters -------------------------------------------------------------------------------

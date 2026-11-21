@@ -70,6 +70,7 @@ class CarLink extends EventEmitter {
         this._buildSha = o.buildSha || null;
 
         this._memMode = null;
+        this._memMirror = false;
         this.clientId = this._loadClientId();
 
         this._ws = null;
@@ -106,6 +107,7 @@ class CarLink extends EventEmitter {
             connection: 'closed',
             role: 'viewer',
             mode: this._loadMode(),
+            stageMirror: this._loadStageMirror(),
             carAvailable: true,
             hw: null,
             config: null,
@@ -293,6 +295,19 @@ class CarLink extends EventEmitter {
         return this._rawSend(msg);
     }
 
+    /**
+     * Whether the Car sprite on the stage follows the car pose; persisted in localStorage picar.stageMirror.
+     * @param {boolean} on - mirror on or off
+     */
+    setStageMirror (on) {
+        const v = Boolean(on);
+        this._memMirror = v;
+        try {
+            if (this._local) this._local.setItem(P.STAGE_MIRROR_KEY, v ? '1' : '0');
+        } catch { /* in-memory only */ }
+        this._setState({stageMirror: v});
+    }
+
     /** @returns {object} immutable snapshot of the coarse state */
     getState () {
         return this._state;
@@ -355,6 +370,15 @@ class CarLink extends EventEmitter {
             if (v === 'car' || v === 'sim') return v;
         } catch { /* default */ }
         return this._memMode || 'car';
+    }
+
+    _loadStageMirror () {
+        try {
+            const v = this._local && this._local.getItem(P.STAGE_MIRROR_KEY);
+            if (v === '1') return true;
+            if (v === '0') return false;
+        } catch { /* default */ }
+        return this._memMirror === true;
     }
 
     _saveMode (mode) {

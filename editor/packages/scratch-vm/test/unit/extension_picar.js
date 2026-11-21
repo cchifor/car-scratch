@@ -85,7 +85,8 @@ test('getInfo: ids, colours, opcodes have functions, block types', t => {
     const expectedOps = ['drive', 'driveFor', 'stopMotors', 'setSpeed', 'steer', 'setSteering', 'distance',
         'obstacleCloser', 'whenObstacle', 'lineValue', 'lineSees', 'linePosition', 'whenLineSees', 'lightValue',
         'brightestDirection', 'setObstacleStop', 'setStopDistance', 'setSpeedLimit', 'emergencyStop', 'isConnected',
-        'carMode', 'batteryLow', 'onTimeMinutes', 'carX', 'carY', 'carDirection', 'resetPosition', 'whenCarEvent'];
+        'carMode', 'batteryLow', 'onTimeMinutes', 'carX', 'carY', 'carDirection', 'resetPosition', 'setStageMirror',
+        'stageMirrorOn', 'whenCarEvent'];
     t.same(blocks.map(b => b.opcode), expectedOps);
     const argNames = {};
     for (const b of blocks) {
