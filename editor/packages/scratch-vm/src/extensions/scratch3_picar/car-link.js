@@ -308,6 +308,11 @@ class CarLink extends EventEmitter {
         this._setState({stageMirror: v});
     }
 
+    /** Erase the stage-mirror trail (the GUI's "Clear map"); the extension listens for 'clearTrail'. */
+    clearTrail () {
+        this.emit('clearTrail');
+    }
+
     /** @returns {object} immutable snapshot of the coarse state */
     getState () {
         return this._state;

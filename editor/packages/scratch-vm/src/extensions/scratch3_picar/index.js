@@ -5,6 +5,7 @@ const Cast = require('../../util/cast');
 const formatMessage = require('format-message');
 const CarLink = require('./car-link');
 const P = require('./protocol');
+const StageLayering = require('../../engine/stage-layering');
 
 /**
  * Icon (assets/branding/block-icon.svg) shown at the left edge of each block, as a data URI.
@@ -84,6 +85,7 @@ class Scratch3PiCarBlocks {
             this.link.on('event', evt => this._onLinkEvent(evt));
             this.link.on('state', state => this._onLinkState(state));
             this.link.on('telemetry', tel => this._mirrorStage(tel));
+            this.link.on('clearTrail', () => this._clearTrail());
             if (/[?&]picar_debug=1(&|$|#)/.test((typeof location !== 'undefined' && location.search) || '')) {
                 globalThis.__picar = {link: this.link, runtime};
             }
@@ -179,6 +181,8 @@ class Scratch3PiCarBlocks {
             state.stageMirror !== this._prevMirror) {
             this._mirrorPrev = null;
         }
+        // turning the mirror on starts a fresh trail
+        if (state.stageMirror === true && this._prevMirror !== true) this._clearTrail();
         this._prevMirror = state.stageMirror;
         const wasUp = prev === 'open' || prev === 'switching';
         const down = state.connection === 'closed' || state.connection === 'reload';
@@ -251,14 +255,38 @@ class Scratch3PiCarBlocks {
         this._drawTrail(prev, here);
     }
 
-    _drawTrail (from, to) {
-        const pen = this.runtime.ext_pen;
+    /**
+     * The mirror's own trail layer on the stage (a pen skin on the pen layer, created the way the Pen extension
+     * creates its own): it needs no Pen extension and never touches the user's pen drawings. This VM has no
+     * `runtime.ext_pen` to borrow the Pen extension's layer from.
+     * @returns {number} the skin id, or -1 without a renderer
+     */
+    _trailSkin () {
         const renderer = this.runtime.renderer;
-        if (!pen || !renderer || typeof pen._getPenLayerID !== 'function') return;
-        const skin = pen._getPenLayerID();
+        if (!renderer || typeof renderer.createPenSkin !== 'function') return -1;
+        if (this._trailRenderer !== renderer) { // first use, or a renderer attached later
+            this._trailRenderer = renderer;
+            this._trailSkinId = renderer.createPenSkin();
+            const drawable = renderer.createDrawable(StageLayering.PEN_LAYER);
+            renderer.updateDrawableSkinId(drawable, this._trailSkinId);
+        }
+        return this._trailSkinId;
+    }
+
+    _drawTrail (from, to) {
+        const skin = this._trailSkin();
         if (skin < 0) return;
-        renderer.penLine(skin, {color4f: TRAIL_COLOR4F.slice(), diameter: TRAIL_SIZE}, from.x, from.y, to.x, to.y);
+        this.runtime.renderer.penLine(skin, {color4f: TRAIL_COLOR4F.slice(), diameter: TRAIL_SIZE},
+            from.x, from.y, to.x, to.y);
         if (typeof this.runtime.requestRedraw === 'function') this.runtime.requestRedraw();
+    }
+
+    _clearTrail () {
+        this._mirrorPrev = null;
+        if (this._trailRenderer && this._trailRenderer === this.runtime.renderer) {
+            this.runtime.renderer.penClear(this._trailSkinId);
+            if (typeof this.runtime.requestRedraw === 'function') this.runtime.requestRedraw();
+        }
     }
 
     _startEventHats (event) {

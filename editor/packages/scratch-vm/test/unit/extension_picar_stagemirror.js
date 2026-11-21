@@ -41,9 +41,20 @@ const setup = (opts = {}) => {
     runtime.redraws = 0;
     runtime.requestRedraw = () => runtime.redraws++;
     if (opts.pen) {
+        // a fake stage renderer: the mirror draws on its own pen skin (no Pen extension needed)
         runtime.lines = [];
-        runtime.renderer = {penLine: (...a) => runtime.lines.push(a)};
-        runtime.ext_pen = {_getPenLayerID: () => 7};
+        runtime.clears = [];
+        runtime.drawables = [];
+        runtime.renderer = {
+            createPenSkin: () => 7,
+            createDrawable: layer => {
+                runtime.drawables.push(layer);
+                return 3;
+            },
+            updateDrawableSkinId: () => {},
+            penLine: (...a) => runtime.lines.push(a),
+            penClear: id => runtime.clears.push(id)
+        };
     }
     ctx.runtime = runtime;
     ctx.ext = new PiCar(runtime);
@@ -119,7 +130,7 @@ test('tiny changes are skipped', t => {
     t.end();
 });
 
-test('trail: lines only with the Pen extension, none across a jump or a reset', t => {
+test('trail: drawn on the mirror own pen skin (no Pen extension), none across a jump or a reset', t => {
     const noPen = setup();
     noPen.link.setStageMirror(true);
     noPen.tel({x: 0, y: 0});
@@ -133,6 +144,7 @@ test('trail: lines only with the Pen extension, none across a jump or a reset', 
     t.equal(ctx.runtime.lines.length, 1);
     const [skin, attrs, x0, y0, x1, y1] = ctx.runtime.lines[0];
     t.equal(skin, 7);
+    t.same(ctx.runtime.drawables, ['pen'], 'one drawable on the pen layer, created on first use');
     t.equal(attrs.diameter, 2);
     t.same(attrs.color4f.map(v => Math.round(v * 255)), [198, 40, 40, 255]);
     t.same([x0, y0, x1, y1], [1, 0, 11, 0]);
@@ -146,6 +158,21 @@ test('trail: lines only with the Pen extension, none across a jump or a reset', 
     ctx.link.setStageMirror(false);
     ctx.link.setStageMirror(true);
     t.equal(ctx.ext._mirrorPrev, null, 'toggle / reconnect forget the previous position');
+    t.end();
+});
+
+test('clearTrail (the GUI Clear map) and turning the mirror on erase the trail', t => {
+    const ctx = setup({pen: true});
+    ctx.link.setStageMirror(true);
+    ctx.tel({x: 1, y: 0});
+    ctx.tel({x: 11, y: 0});
+    t.equal(ctx.runtime.lines.length, 1);
+    ctx.link.clearTrail();
+    t.same(ctx.runtime.clears, [7], 'the trail skin was cleared');
+    t.equal(ctx.ext._mirrorPrev, null, 'and the next frame starts a new trail');
+    ctx.link.setStageMirror(false);
+    ctx.link.setStageMirror(true);
+    t.same(ctx.runtime.clears, [7, 7], 'turning the mirror on starts fresh');
     t.end();
 });
 
