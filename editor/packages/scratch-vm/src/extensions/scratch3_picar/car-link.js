@@ -2,6 +2,8 @@ const EventEmitter = require('events');
 const P = require('./protocol');
 
 const WS_OPEN = 1;
+// Coalesced ops that set state rather than motion: never dropped by a bypass op, sent before it.
+const SETTING_OPS = Object.freeze(['steer', 'config']);
 
 const defaultClock = () => ({
     // Monotonic: a wall-clock step backwards must not make the throttles drop later presses.
@@ -397,8 +399,18 @@ class CarLink extends EventEmitter {
         return dt >= 0 && dt < P.COALESCE_MS;
     }
 
-    /** Bypass ops clear pending motion ops (and forget what was last sent, so a repeat is real). */
+    /**
+     * Before a bypass op: pending MOTION ops (drive, set_speed) are superseded by it and dropped, but pending
+     * SETTINGS (steer, config) are sent now, in order, so "steer left" + "drive for 4 s" within 50 ms still
+     * steers (on-car finding 2026-11-21: the figure eight drove straight). Also forgets what was last sent, so
+     * a repeat is real.
+     */
     _bypass () {
+        this._dropPending('drive');
+        this._dropPending('set_speed');
+        for (const op of SETTING_OPS) {
+            if (op in this._pending) this._flushPending(op);
+        }
         this._clearPending();
         this._bypassMemory();
     }

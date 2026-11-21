@@ -157,7 +157,7 @@ test('config fields merge while pending and identical fields are dropped', t => 
     t.end();
 });
 
-test('stop/estop/pause/resume/move/estop_reset bypass the coalescer and clear pending motion', t => {
+test('stop/estop/pause/resume/move/estop_reset bypass the coalescer: pending motion dropped, settings sent', t => {
     const ctx = makeLink(CarLink);
     const ws = connect(ctx);
     ctx.link.send('drive', {dir: 'forward', speed: 50});
@@ -169,8 +169,9 @@ test('stop/estop/pause/resume/move/estop_reset bypass the coalescer and clear pe
         t.ok(ctx.link.send(op) > 0, `${op} sent immediately`);
     }
     ctx.clock.advance(500);
-    t.same(ws.cmds().map(c => c.op), ['drive', 'steer', 'stop', 'pause', 'resume', 'estop_reset'],
-        'pending drive/steer were cleared, not flushed');
+    t.same(ws.cmds().map(c => c.op), ['drive', 'steer', 'steer', 'stop', 'pause', 'resume', 'estop_reset'],
+        'the pending drive was dropped; the pending steer went out before the stop');
+    t.equal(ws.cmds('steer')[1].angle, 9, 'with the latest angle');
     // after a stop the same drive is a real command again
     ctx.link.send('drive', {dir: 'forward', speed: 50});
     t.equal(ws.cmds('drive').length, 2);
@@ -389,6 +390,35 @@ test('estop while closed is queued once, posted over REST, and sent right after 
     ws2.open();
     ws2.serverSend(welcome());
     t.equal(ws2.cmds('estop').length, 0, 'not re-sent on the next reconnect');
+    t.end();
+});
+
+// On-car finding 2026-11-21: "steer straight; steer left; drive forward for 4 s" drove straight, because the
+// move (a bypass op) threw the pending steer away.
+test('a steer pending in the coalescer goes out before a following timed move', t => {
+    const ctx = makeLink(CarLink);
+    const ws = connect(ctx);
+    ctx.link.send('steer', {angle: 0});
+    ctx.link.send('steer', {angle: -30});
+    ctx.link.move('forward', 40, 4000);
+    t.same(ws.cmds().map(c => [c.op, c.angle]), [['steer', 0], ['steer', -30], ['move', undefined]]);
+    ctx.clock.advance(500);
+    t.equal(ws.cmds('steer').length, 2, 'not sent twice');
+    t.end();
+});
+
+test('a config pending in the coalescer goes out before a stop; a pending drive does not', t => {
+    const ctx = makeLink(CarLink);
+    const ws = connect(ctx);
+    ctx.link.send('config', {stop_cm: 30});
+    ctx.link.send('config', {stop_cm: 40});
+    ctx.link.send('drive', {dir: 'forward', speed: 50});
+    ctx.link.send('drive', {dir: 'forward', speed: 70});
+    ctx.link.send('stop');
+    ctx.clock.advance(500);
+    t.same(ws.cmds().map(c => c.op), ['config', 'drive', 'config', 'stop']);
+    t.equal(ws.cmds('config')[1].stop_cm, 40);
+    t.equal(ws.cmds('drive').length, 1, 'the pending drive (70) was superseded by the stop');
     t.end();
 });
 
