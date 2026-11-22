@@ -460,3 +460,91 @@ def test_hub_stop_is_bounded_with_an_unresponsive_peer():
         return loop.time() - t0
 
     assert asyncio.run(run()) < 1.0
+
+
+# -- round 2 of the implementation review ------------------------------------------------------------------
+def test_activity_between_the_quiet_check_and_the_trigger_makes_the_ping_uncertain():
+    # first reviewer: a pause after the quiet check; a noise-triggered answer comes and goes in it, and a 27 ms pulse
+    # starts right where our echo would. Before, the noise was taken for our own trigger edges and the pulse for FAR.
+    b, us, line, clock = make()
+    line.queue((D, echo_for_cm(60)))
+    us.ping()                                            # a normal ping first
+    clock.advance(0.05)
+    orig_quiet = us._wait_quiet
+
+    def quiet_then_noise():
+        ok = orig_quiet()
+        n = clock.now
+        line._pulses += [(n + 0.0003, n + 0.0006)]       # a short answer to a noise trigger
+        line._pulses.sort()
+        clock.gap_after(1, 0.004)                        # ... while the sensor thread pauses before triggering
+        return ok
+
+    def far_after_our_trigger(t0=None):
+        line.pings += 1
+        line._pulses += [(t0 + D, t0 + D + 0.027)]
+        line._pulses.sort()
+
+    us._wait_quiet = quiet_then_noise
+    line._trigger = far_after_our_trigger
+    v = us.ping()
+    assert v is not FAR and us.lost_echo_cm == 0.0 and us.discards["pre_trigger"] == 1, (v, dict(us.discards))
+
+
+def test_an_io_error_mid_cycle_never_hands_the_pin_to_polling_while_high():
+    # first reviewer: an I/O error on a batch's only ping left no cycle state, and the hub switched to polling
+    b, us, line, clock = make()
+    line.queue((D, 0.027), (D, 0.027), (D, 0.027))
+    b.hub.read()                                        # far: the next sample pings once
+    clock.advance(0.04)
+    us.broken = True                                    # as if the checks had just failed for the fifth time
+    line.queue(("cycle", D, 0.4))
+    fired = []
+
+    def fail_once():
+        if not fired:
+            fired.append(1)
+            line.fail.add("events")
+
+    line.on_wait = fail_once
+    b.hub.read()                                        # the cycle starts; reading its events fails
+    line.on_wait = None
+    assert us.discards["io_error"] == 1
+    assert line._busy() and b.hub.us is us              # still the edge sensor while the module holds the line
+    while clock.now < line._busy_until + 0.05:
+        clock.advance(0.04)
+        b.hub.read()
+    assert b.hub.us.timing == "poll" and line.closed
+
+
+def test_a_first_pulse_merged_into_a_later_rise_is_never_far():
+    # first reviewer: a delayed IRQ thread merges the first rise and fall with the second rise
+    for irq in (0.0003, 0.00038, 0.0005):
+        b, us, line, clock = make(irq_thread=irq)
+        line.queue(("multi", [(D, 0.0003), (0.00068, 0.027)]))
+        v = us.ping()
+        assert v is not FAR and not us.busy_started and us.lost_echo_cm == 0.0, (irq, v, dict(us.discards))
+
+
+def test_a_late_first_rise_breaks_the_floor():
+    b, us, line, clock = make()
+    line.queue((0.0006, echo_for_cm(50)))
+    v = us.ping()
+    assert v is None and us.lost_echo_cm == 0.0 and us.discards["late_rise"] == 1
+
+
+def test_repeated_slow_triggers_fall_back_to_polling():
+    b, us, line, clock = make(pull_s=0.0005)
+    for _ in range(ue.FLOOR_BREAKS_MAX):
+        line.queue((D, echo_for_cm(50)))
+        us.ping()
+        clock.advance(0.05)
+    assert us.broken and us.discards["slow_trigger"] == ue.FLOOR_BREAKS_MAX
+
+
+def test_discarded_pings_keep_their_events_for_the_log():
+    b, us, line, clock = make()
+    line.queue((0.0002, echo_for_cm(50)))
+    us.ping()
+    a = us.anomalies[-1]
+    assert a["why"] == "early_rise" and a["events"][0][0] == "R" and a["ours"] == 2

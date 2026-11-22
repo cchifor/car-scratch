@@ -263,7 +263,7 @@ class SensorHub:
         """An edge-timed sensor whose module checks keep failing hands over to polling, once its line is free: the
         polling sensor drives the pin, so never while the module may still be answering."""
         us = self.us
-        if not getattr(us, "broken", False) or self._us_fallback is None or us._busy_since is not None:
+        if not getattr(us, "broken", False) or self._us_fallback is None or not us.ready_for_handover():
             return
         log.error("ultrasonic: the module keeps failing the edge timing's checks; timing echoes by polling")
         try:
@@ -290,6 +290,11 @@ class SensorHub:
                      " ".join(f"{k} {v}" for k, v in sorted(diag.items())) or "no diagnostics")
             trig.clear()
             diag.clear()
+            anomalies = getattr(self.us, "anomalies", None)
+            if anomalies:
+                for a in list(anomalies)[:3]:          # a few examples, in us from the trigger's pull-up
+                    log.info("ultrasonic edges: discarded %s", a)
+                anomalies.clear()
         self._discard_log_t = now
 
     # -- PCF8591 ----------------------------------------------------------------------------------------

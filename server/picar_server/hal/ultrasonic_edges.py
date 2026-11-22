@@ -33,6 +33,8 @@ from .sensors import BUSY, BUSY_CYCLE_MAX_S, ECHO_FAR_S, ECHO_START_TIMEOUT_S, E
 log = logging.getLogger("picar.sensors")
 
 RISE_MIN_S = 0.00025
+RISE_MAX_S = 0.0005                         # ... and no later (measured <= 402 us): a later first rise means the true
+                                            # first rise was merged away by a delayed IRQ thread
 FALL_LAT_S = 0.0001
 TRIGGER_MAX_S = 0.00014
 QUIET_S = 0.002                             # no edge for this long (and the line low) before a trigger
@@ -42,7 +44,7 @@ LINGER_S = 0.0003                           # after the first fall, wait this lo
 SLICE_S = 0.04                              # longest single wait (the stop flag is checked between waits)
 FALL_SETTLE_S = 0.002                       # a low line with no fall delivered: time for the kernel to queue it
 TRIGGER_S = 0.00001
-FLOOR_BREAKS_MAX = 5                        # consecutive pings breaking a floor before falling back to polling
+FLOOR_BREAKS_MAX = 5                        # consecutive pings failing a check before falling back to polling
 NO_ANSWER_MAX = 5                           # consecutive triggers with no answer before falling back to polling
 PROBE_TRIES, PROBE_NEED = 5, 4              # start-up: the module must answer pull-up triggers
 KEEP = 4096
@@ -77,6 +79,7 @@ class EdgeUltrasonic(Ultrasonic):
         self.diag: collections.Counter = collections.Counter()   # diagnostics, not discards (logged per minute)
         self.trigger_s: collections.deque = collections.deque(maxlen=KEEP)     # trigger fall call durations
         self.second_widths: collections.deque = collections.deque(maxlen=256)  # second pulses (the double pulse)
+        self.anomalies: collections.deque = collections.deque(maxlen=64)       # details of discarded pings
         self._armed = False
         self._seq = 0                              # a new request's events count from 1
         self._gap = False
@@ -84,6 +87,9 @@ class EdgeUltrasonic(Ultrasonic):
         self._unwatched_next = False
         self._cycle_fell = False
         self._broke = False
+        self._pre: list = []                       # events stamped before our trigger began (but after the quiet check)
+        self._ours = 0                             # events stamped inside our own trigger window
+        self._win = (0.0, 0.0, 0.0)                # this ping's t_up_lo, t_fall_lo, t_fall_hi
 
     # -- events -----------------------------------------------------------------------------------------
     def _take(self) -> list:
@@ -116,11 +122,18 @@ class EdgeUltrasonic(Ultrasonic):
             new = self._pull(until)
             if not new:
                 return
-            for e in new:
-                if e.t <= t_ours:
-                    self.diag["trigger_edges"] += 1        # our own trigger's (or older): never the module's
-                else:
-                    evs.append(e)
+            self._sort(new, evs, t_ours)
+
+    def _sort(self, new: list, evs: list, t_ours: float) -> None:
+        t_up_lo = self._win[0]
+        for e in new:
+            if e.t < t_up_lo:
+                self._pre.append(e)                    # the line moved after the quiet check, before our trigger
+            elif e.t <= t_ours:
+                self._ours += 1                        # our own trigger's edges (merged or misread: 1 or 2)
+                self.diag["trigger_edges"] += 1
+            else:
+                evs.append(e)
 
     def _wait_quiet(self) -> bool:
         """True once the line is low and has had no edge for QUIET_S (the module has finished answering)."""
@@ -157,6 +170,10 @@ class EdgeUltrasonic(Ultrasonic):
             self.discards["io_error"] += 1
             self.lost_echo_cm = 0.0
             self._armed = False
+            if self._busy_since is None:
+                # unknown: the module may be answering. Follow it until the line is low (and, before the next trigger,
+                # quiet); an I/O error is no evidence of a lost edge, so no "lost fall" when it is simply low.
+                self._busy_since, self._cycle_fell = self.clock.monotonic(), True
             try:
                 self.line.arm()                        # back to the pull-down (a trigger may be half done)
                 self._armed = True
@@ -187,12 +204,14 @@ class EdgeUltrasonic(Ultrasonic):
         unwatched, self._unwatched_next = self._unwatched_next, False
         self._gap = False
         self.triggered = True
-        self.ping_start = c.monotonic()
+        self._pre, self._ours = [], 0
+        self.ping_start = t_up_lo = c.monotonic()      # our pull-up (the trigger's rise) happens after this
         ln.pull_up()
         c.sleep(TRIGGER_S)
         t_fall_lo = c.monotonic()                      # the trigger's fall happens after this ...
         ln.arm()
         t_fall_hi = c.monotonic()                      # ... and before this
+        self._win = (t_up_lo, t_fall_lo, t_fall_hi)
         self.trigger_s.append(t_fall_hi - t_fall_lo)
         t_ours = t_fall_hi + FALL_LAT_S                # our own trigger edges are stamped by then
 
@@ -219,7 +238,7 @@ class EdgeUltrasonic(Ultrasonic):
                 r2 = evs[-1]
                 self._collect(evs, r2.t + ECHO_STUCK_S, t_ours, lambda es: not es[-1].rising)
         line_high = ln.get() == 1
-        evs += [e for e in self._take() if e.t > t_ours]   # anything queued by the time of the level read
+        self._sort(self._take(), evs, t_ours)          # anything queued by the time of the level read
         return self._classify(evs, unwatched, t_fall_lo, t_fall_hi, line_high)
 
     def _classify(self, evs: list, unwatched: bool, t_fall_lo: float, t_fall_hi: float, line_high: bool):
@@ -229,6 +248,7 @@ class EdgeUltrasonic(Ultrasonic):
         def discard(why: str):
             self.discards[why] += 1
             self.lost_echo_cm = 0.0                    # an echo may have come and gone unseen: at any distance
+            self._record(why, evs, line_high)
             if line_high:                              # the module is still answering: follow it
                 self._busy_since, self._cycle_fell = c.monotonic(), False
                 return BUSY
@@ -237,9 +257,14 @@ class EdgeUltrasonic(Ultrasonic):
         if unwatched:
             return discard("unwatched")
         if t_fall_hi - t_fall_lo > TRIGGER_MAX_S:
+            self._count_break("slow_trigger")
             return discard("slow_trigger")             # a module edge could hide among our own trigger's
         if self._gap:
             return discard("seq_gap")
+        if self._pre:
+            return discard("pre_trigger")              # the module answered something else just before our trigger
+        if self._ours > 2:
+            return discard("trigger_window")           # more edges in our trigger window than our own two
         expect_rise = True
         for e in evs:
             if e.rising != expect_rise:
@@ -252,7 +277,9 @@ class EdgeUltrasonic(Ultrasonic):
             else:
                 pulses[-1][1] = e.t
         if pulses and pulses[0][0] < t_fall_lo + RISE_MIN_S:
-            return self._floor_break("early_rise")
+            return self._floor_break("early_rise", evs, line_high)
+        if pulses and pulses[0][0] > t_fall_lo + RISE_MAX_S:
+            return self._floor_break("late_rise", evs, line_high)
         if not pulses:
             if line_high:
                 return discard("edges")                # high, but no rise was reported
@@ -287,18 +314,42 @@ class EdgeUltrasonic(Ultrasonic):
             return FAR
         return width * CM_PER_S
 
-    def _floor_break(self, why: str):
+    def _count_break(self, why: str) -> None:
+        """A check failed: FLOOR_BREAKS_MAX in a row switch the server to polling."""
         self._broke = True
         self.floor_breaks += 1
+        if self.floor_breaks >= FLOOR_BREAKS_MAX and not self.broken:
+            log.error("ultrasonic: %d pings in a row failed the edge timing's checks (last: %s)",
+                      self.floor_breaks, why)
+            self.broken = True
+
+    def _floor_break(self, why: str, evs: list, line_high: bool):
+        self._count_break(why)
         self.discards[why] += 1
         self.lost_echo_cm = 0.0
-        log.error("ultrasonic: %s (a measured property of the module did not hold)", why)
-        if self.floor_breaks >= FLOOR_BREAKS_MAX:
-            self.broken = True
-        if self.line.get() == 1:
+        self._record(why, evs, line_high)
+        if line_high:
             self._busy_since, self._cycle_fell = self.clock.monotonic(), False
             return BUSY
         return None
+
+    def _record(self, why: str, evs: list, line_high: bool) -> None:
+        """Keep a discarded ping's events, in us from our pull-up, for the per-minute log and diagnostics."""
+        up, lo, hi = self._win
+        us = lambda t: round((t - up) * 1e6)          # noqa: E731
+        self.anomalies.append({
+            "why": why, "fall_lo": us(lo), "fall_hi": us(hi), "high": line_high, "ours": self._ours,
+            "pre": [("R" if e.rising else "F", us(e.t)) for e in self._pre],
+            "events": [("R" if e.rising else "F", us(e.t)) for e in evs],
+        })
+
+    def ready_for_handover(self) -> bool:
+        """True when the polling fallback may take the pin: no cycle followed, and the line verified low and quiet
+        (the polling sensor drives the pin)."""
+        try:
+            return self._busy_since is None and self._wait_quiet()
+        except (OSError, _Stopped):
+            return False
 
     def _follow_cycle(self):
         """A cycle (or a line found high) is in progress: BUSY, None when stuck, or _FREE once it has ended."""
