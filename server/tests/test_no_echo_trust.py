@@ -189,9 +189,9 @@ def test_samples_without_clear_t_behave_as_before():
 # ---- the real sensor code feeding the controller, on one fake clock ------------------------------------------------
 
 class EdgeScript:
-    """FakeGPIO's script API on a FakeEdgeLine. The polling fake times pulses from when the poll starts watching
-    (~0.1 ms after the trigger on the car); the edge fake from the trigger's fall: add that 0.1 ms."""
-    SHIFT = 0.0001
+    """FakeGPIO's script API on a FakeEdgeLine. The polling fake times pulses from when the poll starts watching (its
+    0.3 ms is the module's ~0.47 ms rise as polling sees it); the edge fake from our pull-up: add 0.17 ms."""
+    SHIFT = 0.00017
 
     def __init__(self, line):
         self.line = line

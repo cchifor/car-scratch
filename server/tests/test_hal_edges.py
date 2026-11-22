@@ -16,7 +16,7 @@ from picar_server.hal.sensors import BUSY, FAR
 
 from fakes_hw import FakeBus, FakeClock, FakeEdgeLine, FakeGPIO, echo_for_cm
 
-D = 0.00033                                             # the module's rise after the trigger (measured 289-402 us)
+D = 0.00047                                             # the module's rise after our pull-up starts (measured 440-531 us)
 
 
 def make(**line_kw):
@@ -98,7 +98,7 @@ WIDTHS = [0.0002, 0.0005, 0.001, 0.003, 0.0119, 0.01199, 0.012, 0.01201, 0.0121,
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-@pytest.mark.parametrize("rise", [0.00029, 0.00033, 0.0004])
+@pytest.mark.parametrize("rise", [0.00044, 0.00047, 0.00053])
 @pytest.mark.parametrize("lat", [(0.0, 0.0, 0.0), (0.0, 0.00005, 0.0), (0.00003, 0.0001, 0.00002), (0.0004, 0.0, 0.0)])
 def test_never_farther_and_never_falsely_clear(width, rise, lat):
     irq, fall_late, rise_late = lat
@@ -188,7 +188,7 @@ def test_an_overflow_before_the_first_event_is_a_gap():
 
 def test_an_early_rise_breaks_the_floor():
     b, us, line, clock = make()
-    line.queue((0.0002, echo_for_cm(50)))
+    line.queue((0.0003, echo_for_cm(50)))
     v = us.ping()
     assert v is None and us.lost_echo_cm == 0.0 and us.discards["early_rise"] == 1
 
@@ -196,11 +196,11 @@ def test_an_early_rise_breaks_the_floor():
 def test_floor_breaks_count_in_a_row():
     b, us, line, clock = make()
     for i in range(9):
-        line.queue((0.0002, echo_for_cm(50)) if i != 4 else (D, echo_for_cm(50)))
+        line.queue((0.0003, echo_for_cm(50)) if i != 4 else (D, echo_for_cm(50)))
         us.ping()
         clock.advance(0.05)
     assert not us.broken
-    line.queue((0.0002, echo_for_cm(50)))
+    line.queue((0.0003, echo_for_cm(50)))
     us.ping()
     assert us.broken
 
@@ -283,7 +283,7 @@ def test_untriggered_pings_do_not_reset_the_failure_count():
     # second reviewer: an early-rising module answering with long cycles; the cycle-following pings in between
     # must not keep zeroing the count, or the fallback is never reached
     b, us, line, clock = make()
-    line.default = ("cycle", 0.0002, 0.4015)
+    line.default = ("cycle", 0.0003, 0.4015)
     for _ in range(200):
         us.ping()
         clock.advance(0.04)
@@ -397,7 +397,7 @@ def test_a_backend_that_fails_after_selecting_edges_releases_the_line():
 # -- the switch to polling -----------------------------------------------------------------------------------
 def break_floors(us, line, clock, n):
     for _ in range(n):
-        line.queue((0.0002, echo_for_cm(50)))
+        line.queue((0.0003, echo_for_cm(50)))
         us.ping()
         clock.advance(0.05)
 
@@ -405,7 +405,7 @@ def break_floors(us, line, clock, n):
 def test_the_switch_to_polling_waits_for_a_free_line():
     b, us, line, clock = make()
     break_floors(us, line, clock, ue.FLOOR_BREAKS_MAX - 1)
-    line.queue(("cycle", 0.0002, 0.4), (D, echo_for_cm(100)), (D, echo_for_cm(100)))
+    line.queue(("cycle", 0.0003, 0.4), (D, echo_for_cm(100)), (D, echo_for_cm(100)))
     s = b.hub.read()                                     # the fifth break starts a long cycle
     assert us.broken and b.hub.us is us and s.echo_cm == 0.0
     while clock.now < line._busy_until + 0.05:
@@ -417,7 +417,7 @@ def test_the_switch_to_polling_waits_for_a_free_line():
 def test_the_batch_that_trips_the_switch_keeps_its_evidence():
     b, us, line, clock = make()
     break_floors(us, line, clock, ue.FLOOR_BREAKS_MAX - 1)
-    line.queue((0.0002, echo_for_cm(50)), (D, echo_for_cm(100)), (D, echo_for_cm(100)))
+    line.queue((0.0003, echo_for_cm(50)), (D, echo_for_cm(100)), (D, echo_for_cm(100)))
     s = b.hub.read()
     assert b.hub.us.timing == "poll"
     assert s.echo_cm == 0.0 and s.echo_t is not None and s.dist_t is not None
@@ -586,7 +586,7 @@ def test_a_first_pulse_merged_into_a_later_rise_is_never_far():
     # first reviewer: a delayed IRQ thread merges the first rise and fall with the second rise
     for irq in (0.0003, 0.00038, 0.0005):
         b, us, line, clock = make(irq_thread=irq)
-        line.queue(("multi", [(D, 0.0003), (0.00068, 0.027)]))
+        line.queue(("multi", [(D, 0.0003), (D + 0.00036, 0.027)]))   # a 0.06 ms dip
         v = us.ping()
         assert v is not FAR and not us.busy_started and us.lost_echo_cm == 0.0, (irq, v, dict(us.discards))
 
@@ -609,7 +609,7 @@ def test_repeated_slow_triggers_fall_back_to_polling():
 
 def test_discarded_pings_keep_their_events_for_the_log():
     b, us, line, clock = make()
-    line.queue((0.0002, echo_for_cm(50)))
+    line.queue((0.0003, echo_for_cm(50)))
     us.ping()
     a = us.anomalies[-1]
     assert a["why"] == "early_rise" and a["events"][0][0] == "R" and a["ours"] == 2

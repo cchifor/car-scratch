@@ -5,19 +5,22 @@ shared); only ping() and the lifecycle differ. The kernel timestamps every edge 
 timing no longer depends on Python being scheduled, and the thread sleeps instead of spinning.
 
 The line is never driven. It stays an input with both edges detected, held low by the internal pull-down; a ping
-switches to the pull-up for ~10 us and back, and that fall triggers the module (measured on the car 2026-11-22:
-1000 of 1000 answered idle, 498 of 500 under load). Edge detection is therefore on all the time: there is no window
-in which an echo could come and go unseen, and nothing can fight the module's output.
+switches to the pull-up and straight back. The module times its answer from that RISE (measured on the car
+2026-11-22: its echo rises 440-531 us after the pull-up starts, however long the pull-up is held, and a pull-up held
+400 us or more hides that rise under itself), so the pull-down follows at once. Edge detection is on all the time:
+there is no window in which an echo could come and go unseen, and nothing can fight the module's output.
 
 What the rules rest on, measured on this module and kernel and checked on every ping (a ping that breaks one is
 discarded with a possible echo; five in a row switch the server back to polling):
 
-  RISE_MIN_S     the module rises no earlier than this after the trigger (measured >= 289 us from t_fall_lo)
+  RISE_MIN_S, RISE_MAX_S  the module's first rise comes this long after our pull-up starts (measured 440-531 us).
+                 Earlier: the module answered something else. Later: a delayed IRQ thread merged the true first rise
+                 away (it lies >= a glitch plus a dip, ~0.26 ms, after the true one).
   FALL_LAT_S     a fall's stamp is late by at most this (measured <= 75 us); subtracted from every width, so a
                  reading is never farther than the first echo while the kernel's IRQ entry latency stays below it
-  TRIGGER_MAX_S  the trigger's pull-down call returns within this. Our own trigger's edges are then stamped by
-                 t_fall_hi + FALL_LAT_S, and every module edge after it (RISE_MIN_S > TRIGGER_MAX_S + FALL_LAT_S),
-                 so the two can't be mistaken for each other; a slower call makes the ping uncertain
+  TRIGGER_MAX_S  the whole trigger (pull-up start to the pull-down's return) takes at most this (measured
+                 34-158 us). Our own edges are then stamped by t_fall_hi + FALL_LAT_S, before any module edge
+                 (RISE_MIN_S > TRIGGER_MAX_S + FALL_LAT_S), so the two can't be mistaken for each other
 """
 from __future__ import annotations
 
@@ -32,19 +35,16 @@ from .sensors import BUSY, BUSY_CYCLE_MAX_S, ECHO_FAR_S, ECHO_START_TIMEOUT_S, E
 
 log = logging.getLogger("picar.sensors")
 
-RISE_MIN_S = 0.00025
-RISE_MAX_S = 0.0005                         # ... and no later (measured <= 402 us): a later first rise means the true
-                                            # first rise was merged away by a delayed IRQ thread
+RISE_MIN_S = 0.0004                         # from the start of our pull-up
+RISE_MAX_S = 0.0006
 FALL_LAT_S = 0.0001
-TRIGGER_MAX_S = 0.00014
-PULLUP_MAX_S = 0.0005                       # the whole pull-up (call + hold) too: a stall there could hide a pulse
+TRIGGER_MAX_S = 0.00028                     # pull-up start to the pull-down call's return
 QUIET_S = 0.002                             # no edge for this long (and the line low) before a trigger
 QUIET_MAX_S = 0.05                          # still not quiet after this: treat the line as busy
 LINGER_S = 0.0003                           # after the first fall, wait this long for a second pulse (>= 1 ms in
                                             # practice: the kernel poll rounds up to whole milliseconds)
 SLICE_S = 0.04                              # longest single wait (the stop flag is checked between waits)
 FALL_SETTLE_S = 0.002                       # a low line with no fall delivered: time for the kernel to queue it
-TRIGGER_S = 0.00001
 FLOOR_BREAKS_MAX = 5                        # consecutive pings failing a check before falling back to polling
 NO_ANSWER_MAX = 5                           # consecutive triggers with no answer before falling back to polling
 PROBE_TRIES, PROBE_NEED = 5, 4              # start-up: the module must answer pull-up triggers
@@ -78,7 +78,7 @@ class EdgeUltrasonic(Ultrasonic):
         self.answered = False                      # the last triggered ping saw the module answer
         self.triggered = False                     # the last ping() triggered the module
         self.diag: collections.Counter = collections.Counter()   # diagnostics, not discards (logged per minute)
-        self.trigger_s: collections.deque = collections.deque(maxlen=KEEP)     # trigger fall call durations
+        self.trigger_s: collections.deque = collections.deque(maxlen=KEEP)     # whole trigger durations
         self.second_widths: collections.deque = collections.deque(maxlen=256)  # second pulses (the double pulse)
         self.anomalies: collections.deque = collections.deque(maxlen=64)       # details of discarded pings
         self._armed = False
@@ -208,14 +208,13 @@ class EdgeUltrasonic(Ultrasonic):
         self._gap = False
         self.triggered = True
         self._pre, self._ours = [], 0
-        self.ping_start = t_up_lo = c.monotonic()      # our pull-up (the trigger's rise) happens after this
-        ln.pull_up()
-        c.sleep(TRIGGER_S)
+        self.ping_start = t_up_lo = c.monotonic()      # our pull-up (the trigger's rise, the module's time 0) is after this
+        ln.pull_up()                                   # (the call itself holds it up ~20 us: enough for the module)
         t_fall_lo = c.monotonic()                      # the trigger's fall happens after this ...
         ln.arm()
         t_fall_hi = c.monotonic()                      # ... and before this
         self._win = (t_up_lo, t_fall_lo, t_fall_hi)
-        self.trigger_s.append(t_fall_hi - t_fall_lo)
+        self.trigger_s.append(t_fall_hi - t_up_lo)
         t_ours = t_fall_hi + FALL_LAT_S                # our own trigger edges are stamped by then
 
         def has_fall(es):
@@ -263,7 +262,7 @@ class EdgeUltrasonic(Ultrasonic):
 
         if unwatched:
             return discard("unwatched")
-        if t_fall_hi - t_fall_lo > TRIGGER_MAX_S or t_fall_lo - t_up_lo > PULLUP_MAX_S:
+        if t_fall_hi - t_up_lo > TRIGGER_MAX_S:
             self._count_break("slow_trigger")
             return discard("slow_trigger")             # a module edge could hide among our own trigger's
         if self._gap:
@@ -271,6 +270,7 @@ class EdgeUltrasonic(Ultrasonic):
         if self._pre:
             return discard("pre_trigger")              # the module answered something else just before our trigger
         if self._ours > 2:
+            self._count_break("trigger_window")
             return discard("trigger_window")           # more edges in our trigger window than our own two
         expect_rise = True
         for e in evs:
@@ -283,9 +283,9 @@ class EdgeUltrasonic(Ultrasonic):
                 pulses.append([e.t, None])
             else:
                 pulses[-1][1] = e.t
-        if pulses and pulses[0][0] < t_fall_lo + RISE_MIN_S:
+        if pulses and pulses[0][0] < t_up_lo + RISE_MIN_S:
             return self._floor_break("early_rise", evs, line_high)
-        if pulses and pulses[0][0] > t_fall_lo + RISE_MAX_S:
+        if pulses and pulses[0][0] > t_up_lo + RISE_MAX_S:
             return self._floor_break("late_rise", evs, line_high)
         if not pulses:
             if line_high:

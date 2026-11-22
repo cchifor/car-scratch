@@ -285,7 +285,7 @@ class SensorHub:
         diag, trig = getattr(self.us, "diag", None), getattr(self.us, "trigger_s", None)
         if trig:
             b = sorted(trig)
-            log.info("ultrasonic edges: %d triggers, trigger fall call us p50 %.0f p99 %.0f max %.0f; %s", len(b),
+            log.info("ultrasonic edges: %d triggers, trigger us p50 %.0f p99 %.0f max %.0f; %s", len(b),
                      b[len(b) // 2] * 1e6, b[min(len(b) - 1, int(len(b) * 0.99))] * 1e6, b[-1] * 1e6,
                      " ".join(f"{k} {v}" for k, v in sorted(diag.items())) or "no diagnostics")
             trig.clear()

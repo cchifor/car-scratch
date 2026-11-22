@@ -225,7 +225,8 @@ class FakeEdgeLine:
     its thread run. Disarming runs a pending thread first (free_irq waits for it).
 
     The pull-up trigger (decision D9). The line stays armed with the pull-down; pull_up() raises it weakly and the
-    next arm() (pull-down) lowers it: that fall triggers the module, unless pull_trigger is False. The host's pull
+    next arm() (pull-down) lowers it. The pull-up's RISE triggers the module (as measured), unless pull_trigger is
+    False; its pulses are then timed from that rise. The host's pull
     pulses are part of the line's waveform, so the kernel sees our own trigger edges too (and merges them like any
     others). Each bias switch takes pull_s, and takes effect pull_at into the call.
 
@@ -386,6 +387,10 @@ class FakeEdgeLine:
         self._maybe_fail("pull_up")
         assert self.mode == "armed", "pull_up() on a line that is not armed"
         self._host_up = self.clock.now + self.pull_s * self.pull_at
+        if self.pull_trigger:
+            self._trigger(self._host_up)
+        else:
+            self.pings += 1
         self.clock.advance(self.pull_s)
 
     def arm(self) -> None:
@@ -394,10 +399,6 @@ class FakeEdgeLine:
             t = self.clock.now + self.pull_s * self.pull_at
             self._host.append((self._host_up, t))
             self._host_up = None
-            if self.pull_trigger:
-                self._trigger(t)
-            else:
-                self.pings += 1
             self.clock.advance(self.pull_s)
             return
         lat = self.arm_latency.pop(0) if isinstance(self.arm_latency, list) else self.arm_latency
