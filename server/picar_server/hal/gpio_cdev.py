@@ -11,6 +11,7 @@ clock behind time.monotonic() on Linux. Layouts and ioctl numbers were checked a
 """
 from __future__ import annotations
 
+import ctypes
 import errno
 import fcntl
 import glob
@@ -18,7 +19,8 @@ import math
 import os
 import select
 import struct
-from typing import NamedTuple, Optional
+import time
+from typing import Callable, NamedTuple, Optional
 
 LINES_MAX = 64
 NUM_ATTRS_MAX = 10
@@ -67,6 +69,16 @@ assert GET_VALUES_IOCTL == 0xC010B40E and SET_VALUES_IOCTL == 0xC010B40F
 assert GET_LINEINFO_IOCTL == 0xC100B405 and GET_CHIPINFO_IOCTL == 0x8044B401
 
 GPIO_CHIP_LABELS = ("pinctrl-bcm2835", "pinctrl-bcm2711")    # the SoC's GPIO bank on the Pi 3 / Pi 4
+
+# ioctl() through ctypes.PyDLL keeps the GIL during the call (fcntl.ioctl releases it). The trigger uses it: between a
+# released and a re-acquired GIL another thread can run for up to the switch interval, which stretched the pull-up to
+# 0.3-0.7 ms in the server (measured), long enough to hide the module's rise under it.
+try:
+    _ioctl_gil = ctypes.PyDLL(None, use_errno=True).ioctl
+    _ioctl_gil.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_char_p)
+    _ioctl_gil.restype = ctypes.c_int
+except (OSError, AttributeError):                    # not Linux: the plain call (the trigger then may be stretched)
+    _ioctl_gil = None
 
 
 class Edge(NamedTuple):
@@ -175,6 +187,29 @@ class EdgeLine:
     def pull_up(self) -> None:
         """The same with the pull-up: raises an idle line weakly (the trigger's rise; never a drive)."""
         fcntl.ioctl(self.fd, SET_CONFIG_IOCTL, self._up)
+
+    def trigger(self, mono: Callable[[], float] = time.monotonic) -> tuple[float, float, float]:
+        """The trigger: pull-up, then straight back to the pull-down, without letting another thread run in between
+        (straight-line C calls holding the GIL: no eval-breaker check). Returns mono() before the pull-up, between the
+        two calls, and after the pull-down."""
+        fd, req, up, down = self.fd, SET_CONFIG_IOCTL, self._up, self._armed
+        if _ioctl_gil is None:
+            t0 = mono()
+            fcntl.ioctl(fd, req, up)
+            t1 = mono()
+            fcntl.ioctl(fd, req, down)
+            return t0, t1, mono()
+        t0 = mono()
+        r1 = _ioctl_gil(fd, req, up)
+        e1 = ctypes.get_errno()
+        t1 = mono()
+        r2 = _ioctl_gil(fd, req, down)                 # always: never leave the line pulled up
+        e2 = ctypes.get_errno()
+        t2 = mono()
+        if r1 < 0 or r2 < 0:
+            e = e1 if r1 < 0 else e2
+            raise OSError(e, os.strerror(e))
+        return t0, t1, t2
 
     def input(self) -> None:
         """Input, edge detection off, no bias (as when released)."""

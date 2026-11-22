@@ -338,7 +338,7 @@ def test_an_unknown_timing_mode_is_rejected(monkeypatch):
 
 
 # -- errors and lifecycle ------------------------------------------------------------------------------------
-@pytest.mark.parametrize("call", ["pull_up", "arm", "get", "events", "wait"])
+@pytest.mark.parametrize("call", ["pull_up", "arm", "trigger", "get", "events", "wait"])
 def test_an_io_error_discards_with_a_possible_echo_and_rearms(call):
     b, us, line, clock = make()
     line.queue((D, echo_for_cm(60)))

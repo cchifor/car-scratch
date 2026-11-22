@@ -393,6 +393,16 @@ class FakeEdgeLine:
             self.pings += 1
         self.clock.advance(self.pull_s)
 
+    def trigger(self, mono):
+        self._maybe_fail("trigger")
+        t0 = mono()
+        try:
+            self.pull_up()
+        finally:
+            t1 = mono()
+            self.arm()                                  # always back to the pull-down, like the real one
+        return t0, t1, mono()
+
     def arm(self) -> None:
         self._maybe_fail("arm")
         if self._host_up is not None:                   # back to the pull-down: the trigger's fall

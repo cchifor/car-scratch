@@ -169,3 +169,15 @@ def test_close_is_idempotent():
     line.close()                                         # input() fails on a pipe: still closes
     line.close()
     assert line.fd is None
+
+
+def test_trigger_holds_the_gil_and_raises_on_a_non_gpio_fd():
+    import os
+    assert cd._ioctl_gil is not None                     # Linux: the GIL-holding ioctl is available
+    line, w = _pipe_line()
+    line._up = cd.line_config(cd.FLAG_INPUT | cd.FLAG_BIAS_PULL_UP)
+    line._armed = cd.line_config(cd.FLAG_INPUT | cd.FLAG_BIAS_PULL_DOWN)
+    with pytest.raises(OSError):
+        line.trigger()                                   # ENOTTY on a pipe: both calls tried, then raised
+    os.close(w)
+    os.close(line.fd)

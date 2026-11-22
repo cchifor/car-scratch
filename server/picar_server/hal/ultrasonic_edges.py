@@ -208,11 +208,10 @@ class EdgeUltrasonic(Ultrasonic):
         self._gap = False
         self.triggered = True
         self._pre, self._ours = [], 0
-        self.ping_start = t_up_lo = c.monotonic()      # our pull-up (the trigger's rise, the module's time 0) is after this
-        ln.pull_up()                                   # (the call itself holds it up ~20 us: enough for the module)
-        t_fall_lo = c.monotonic()                      # the trigger's fall happens after this ...
-        ln.arm()
-        t_fall_hi = c.monotonic()                      # ... and before this
+        # our pull-up (the trigger's rise: the module's time 0) is after t_up_lo; the pull-down after t_fall_lo and
+        # before t_fall_hi. The pull-up call itself holds the line up ~20 us: enough for the module.
+        t_up_lo, t_fall_lo, t_fall_hi = ln.trigger(c.monotonic)
+        self.ping_start = t_up_lo
         self._win = (t_up_lo, t_fall_lo, t_fall_hi)
         self.trigger_s.append(t_fall_hi - t_up_lo)
         t_ours = t_fall_hi + FALL_LAT_S                # our own trigger edges are stamped by then
