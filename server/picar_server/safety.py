@@ -114,9 +114,13 @@ def guard_decision(dist_state: str, dist_cm: Optional[float], margin: float, *, 
     return None
 
 
-def is_clear_sample(dist_state: str, dist_cm: Optional[float], margin: float, distance_guard: bool) -> bool:
+def is_clear_sample(dist_state: str, dist_cm: Optional[float], margin: float, distance_guard: bool,
+                    echo_cm: Optional[float] = None) -> bool:
     """A sample that counts toward clearing `blocked`: far, or ok and at least margin + 5 cm away
-    (any valid reading when the distance guard is off)."""
+    (any valid reading when the distance guard is off). With the guard on, a sample in which any ping heard an echo
+    (or may have: a dropped ping's lower bound) closer than that never counts, whatever its median says."""
+    if distance_guard and echo_cm is not None and echo_cm < margin + UNBLOCK_MARGIN_CM:
+        return False
     if dist_state == DIST_FAR:
         return True
     if dist_state == DIST_OK and dist_cm is not None:

@@ -62,6 +62,7 @@ class Ultrasonic:
         self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
         self.echo_cm: Optional[float] = None       # measure(): closest echo heard
         self.batch_t: Optional[float] = None       # measure(): when its pings began
+        self.meas_t: Optional[float] = None        # measure(): trigger time of the newest valid ping
 
     def ping(self):
         """cm; FAR for an echo ending between 12 and 40 ms; BUSY while the module is in its long no-echo cycle;
@@ -155,7 +156,7 @@ class Ultrasonic:
         lower one counts (median_low): averaging FAR (999) with a real 10 cm echo would report 505 cm."""
         need = 2 if n >= 3 else 1
         vals: list[float] = []
-        self.clear_t = self.echo_cm = None
+        self.clear_t = self.echo_cm = self.meas_t = None
         self.batch_t = self.clock.monotonic()          # no echo heard in this measurement is older than this
         for _ in range(n):
             v = self.ping()
@@ -166,6 +167,7 @@ class Ultrasonic:
                     self.clear_t = self.ping_start
                 return statistics.median_low(vals) if len(vals) >= need else BUSY
             if v is not None:
+                self.meas_t = self.ping_start
                 if v >= FAR:
                     self.clear_t = self.ping_start
                 else:
@@ -191,6 +193,7 @@ class SensorHub:
         self.clear_t: Optional[float] = None       # this sample's "nothing there" time (D7), see Sample.clear_t
         self.echo_cm: Optional[float] = None       # this sample's closest echo, see Sample.echo_cm
         self.echo_t: Optional[float] = None        # when this sample's pings began, see Sample.echo_t
+        self.dist_t: Optional[float] = None        # trigger time of the newest valid ping, see Sample.dist_t
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -224,6 +227,7 @@ class SensorHub:
         self._log_discards()
         self.echo_cm = self.us.echo_cm
         self.echo_t = self.us.batch_t
+        self.dist_t = None if v is None or v is BUSY else self.us.meas_t
         self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
         if v is BUSY:
             # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
@@ -410,4 +414,4 @@ class SensorHub:
         return Sample(t=self.clock.monotonic(), dist_cm=cm, dist_state=state,
                       line_raw=self._read_line(), light_raw=self._read_light(),
                       line_skipped=self.line_skipped, clear_t=self.clear_t, echo_cm=self.echo_cm,
-                      echo_t=self.echo_t)
+                      echo_t=self.echo_t, dist_t=self.dist_t)

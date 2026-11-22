@@ -196,7 +196,8 @@ the stop margin, the guard decision and the clear rule, light and line helpers, 
   `DRIVE_TIMEOUT_S = 5.0`, `REVERSE_RESET_S = 1.0`.
 - `DEFAULT_CONFIG`, `speed_to_duty_pct`, `speed_to_duty`, `duty_to_speed`, `speed_cm_s`, `coast_cm`,
   `margin_cm(stop_cm, speed, cal)`, `effective_speed(direction, speed, speed_limit)`, `guard_decision(...)`,
-  `is_clear_sample(...)`, `brightness`, `brightest`, `line_on`, `line_pos`, `geometry(cal)`, `interp`,
+  `is_clear_sample(...)` (a sample whose pings heard an echo within margin + 5 cm never counts toward releasing
+  `blocked`, whatever its median), `brightness`, `brightest`, `line_on`, `line_pos`, `geometry(cal)`, `interp`,
   `clamp`, `clamp_steer`, `wrap_deg`.
 
 **Configuration.** Calibration tables (`speed_table`, `coast_table`, duty floor and ceiling, light and line
@@ -340,7 +341,9 @@ the real sensors, the real car and the dry-run car.
 
 **Interfaces.**
 
-- `base.py`: `Sample(t, dist_cm, dist_state, line_raw, light_raw)`, `DIST_OK/FAR/NONE/FAULT`, `HardwareFault`,
+- `base.py`: `Sample(t, dist_cm, dist_state, line_raw, light_raw, ...)`; also `clear_t`, `echo_cm` and `echo_t`
+  (D7, D8), and `dist_t`, the newest valid ping's trigger time, which the controller's distance freshness counts
+  from. `DIST_OK/FAR/NONE/FAULT`, `HardwareFault`,
   and the `Backend` protocol: `capabilities()`, `start(on_sample)`, `set_motors(left, right) -> bool` (False when
   a forward duty was refused by a latch; raises `HardwareFault` after a failed retry), `set_steering(angle)`,
   `stop_motors() -> bool` (never raises; False = not confirmed), `inhibit_forward()`, `clear_inhibit()`,
