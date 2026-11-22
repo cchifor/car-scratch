@@ -3,155 +3,261 @@
 ## Context
 
 The ultrasonic sensor (one SIG pin, GPIO5) is timed today by a Python busy-wait that polls the pin
-(`Ultrasonic.ping()` in `server/picar_server/hal/sensors.py`). Three problems follow from polling:
+(`Ultrasonic.ping()` in `server/picar_server/hal/sensors.py`). Polling causes three problems:
 
-1. **A blind spot (D8 residual).** A dip in the line shorter than the polling gap can't be seen. A stall over 1 ms
-   (GIL, scheduler) makes the ping untrustworthy, and the stall rule discards it. Below 1 ms, a dip and rise are
-   invisible. D8 documents this as the open residual.
-2. **CPU.** The busy-wait holds a core while the echo is high, and the GIL switch interval is cut to 0.5 ms for it.
-   That slows every other thread.
-3. **Accuracy.** Polling sees the rise late (one GPIO read is ~70 µs on the Pi 3), so widths come out short.
+1. **A blind spot (the D8 residual).** A dip in the line shorter than the polling gap can't be seen. A stall over 1 ms
+   (GIL, scheduler) makes the ping untrustworthy, and the stall rule discards it. Below 1 ms, a dip followed by a
+   rise is invisible.
+2. **CPU.** The busy-wait holds a core while the echo is high.
+3. **Accuracy.** Polling sees the rise late, so widths come out short.
 
-The kernel's GPIO character device (uAPI v2) timestamps every edge in the interrupt handler (CLOCK_MONOTONIC, ns)
-and queues the edges, whatever Python is doing. The plan listed this as M8.
+The kernel's GPIO character device (uAPI v2) timestamps edges in the hard-IRQ handler (`ktime_get_ns`,
+CLOCK_MONOTONIC) and queues them. This was plan item M8.
+
+### What the kernel does (checked against rpi-6.18.y source by two independent reviews)
+
+- **Edges on inputs only.** Edge flags are valid only on inputs (EINVAL otherwise). `SET_CONFIG` can switch a live
+  request between output and input+edges.
+  - Switching to output calls `edge_detector_stop` (`free_irq`), but queued events are **not** flushed.
+  - Switching to input+edges calls `request_threaded_irq`, which creates an IRQ thread. That makes arming slow.
+- **Event kind and timestamp.** The timestamp is taken in the hard handler. For both edges, the event kind is the
+  level read later, in the IRQ thread.
+  - The BCM2835 edge flow (`handle_edge_irq`) doesn't mask the line, and there is one timestamp slot per line.
+  - Edges closer together than the handling latency **merge, with no `line_seqno` gap**.
+  - An odd merge shows as R R, F F or F-first. An even merge looks plausible: R1 F1 R2 becomes one R at R2, and
+    F1 R2 F2 becomes one F at F2.
+- **Overflow** drops the oldest event and leaves a visible `line_seqno` gap.
 
 ### Measured on the car (2026-11-22, kernel 6.18.50+rpt-rpi-v8, Pi 3 B+)
 
-| Quantity | Value |
-|---|---|
-| Echo rise after the trigger ends (kernel timestamps, 300 pings) | 383–417 µs |
-| CPU, 150 pings: waiting for edges vs polling | 0.18 s vs 1.81 s (2 % vs 21 % of a core) |
-| Polling width error against kernel timestamps | 15–156 µs short (median 78 µs, ~1.3 cm closer) |
-| Enable edge detection, raw `GPIO_V2_LINE_SET_CONFIG` ioctl (server running) | median 133 µs, p99 261 µs, max 461 µs |
-| The same through python3-libgpiod 2.2.1 `reconfigure_lines` | median 203 µs, p99 368 µs, max 418 µs |
-| Output→input+edges with libgpiod, measured after the trigger | 218–544 µs; rise missed in 45 % of pings |
-| Edge sequence gaps, spurious edges on arming | none |
+| Quantity | Value | Source |
+|---|---|---|
+| Echo rise after the trigger (`t` read after `set(0)`), where R was captured | 383–417 µs (200 of 300 pings) | spike 1, libgpiod |
+| CPU, 150 pings: waiting for edges vs polling | 0.18 s vs 1.81 s (2 % vs 21 % of a core) | spike 1 |
+| Polling width vs kernel width, same pulse (spike's poll loop, not the server's) | 15–156 µs short, median 78 µs | spike 1 |
+| Arm after the trigger, libgpiod (events-mode pings) | 218–544 µs, median 274; rise missed in 68 of 150 | spike 1 |
+| Input→input+edges, idle GPIO6: raw ioctl vs libgpiod | median 133 vs 203 µs, p99 261 vs 368 µs | spike 2 |
+| Edge timestamp after the start of the ioctl that makes the edge (GPIO6 pull toggles) | 15–75 µs (one outlier of 852 µs under 3-core load) | spike 3 |
+| Measured low-pulse width vs the userspace bracket | never outside the bracket (2 400 pulses) | spike 3 |
+| Kernel edge kinds for low pulses of ~40 µs / ~60 µs / ≥ 90 µs | 43 / 1 / 0 wrong out of 200 each (R R or a lone R) | spike 3 |
 
-Edge detection can only be on while the line is an input (the kernel rejects output + edges). Each ping must
-therefore re-arm after the trigger. Arming takes longer than the module's rise delay in a minority of pings, and
-the design must handle that.
+**Still to measure:** the real raw sequence on GPIO5 (output → trigger → input+edges), under the server's GIL
+setting. The constants in §2 are fixed from it (step 0 of the implementation).
 
 ## Approach
 
-### 1. A small GPIO character-device module: `hal/gpio_cdev.py`
+### 0. Measure first (car, server stopped about 2 minutes, nothing moves)
 
-A pure-Python wrapper over the uAPI v2 ioctls (`fcntl`, `os`, `select`, `struct`); no new package. Why not
-python3-libgpiod: its per-call overhead adds ~70 µs to arming (table above), which is the difference between
-catching the rise in ~99 % or ~55 % of pings.
+The spike scripts live in `server/tools/diag/` (`edgespike.py`, `irqlat.py` and the passive observer
+`sigwatch.py`), with their invocation documented.
 
-- `EdgeLine(chip="/dev/gpiochip0", offset=5, consumer="car-scratch")` requests the line as an input, with no edges
-  and an event buffer of 64.
-- `output_low()`: SET_CONFIG output with output value 0 (disarms edges).
-- `set(v)`: SET_VALUES.
-- `arm()`: SET_CONFIG input with both edges and the monotonic event clock.
-- `get()`: GET_VALUES.
-- `wait(timeout_s)`: `select.poll` on the request fd.
-- `events()`: non-blocking read of 48-byte `gpio_v2_line_event` records, returned as `(kind, t_s, line_seqno)`.
-- `close()`: input with no edges, then close the fd, so the line is never left driven.
-- The config buffers are built once at start-up; each call is one ioctl on a prebuilt `bytes` buffer.
-- Struct sizes (592, 272, 48 and 16 bytes) and ioctl numbers (`0xC250B407`, `0xC110B40D`, `0xC010B40E`,
-  `0xC010B40F`) are asserted at import.
+1. **Raw ping sequence.** Measure the blind window `B = t_armed − t_fall_lo` (defined in §2) over 1 000 pings,
+   with and without 3 busy processes, and with the switch interval at 0.5 ms and at the 5 ms default.
+2. **Trigger by pull-up.** Does the module trigger when its SIG line is raised only by the internal pull-up, with
+   edges kept armed? If it does, the line never has to become an output and arming disappears:
+   - the trigger's own edges get kernel timestamps;
+   - there is no blind window at all.
+
+   This uses the weak internal pull resistors only (no contention possible). If it works reliably over 1 000
+   pings, §2 switches to it, and the rules for the arming window drop out. Otherwise §2 as written.
+
+### 1. `hal/gpio_cdev.py`: a uAPI v2 wrapper, no new package
+
+Already written and checked on the car on an unused input line: request, arm, read, wait, release. Changes:
+
+- **Line identity.** Find the line by its name `GPIO5` (`GPIO_V2_GET_LINEINFO_IOCTL`) on the chip labelled
+  `pinctrl-bcm2835`/`pinctrl-bcm2711`, instead of assuming `gpiochip0`.
+- **Bias.** Set `BIAS_DISABLED` explicitly on every input config, as rpi-lgpio does today.
+- **Events.**
+  - Validate the event id (1 or 2) and the line offset of each event.
+  - Keep `line_seqno` continuity across drains and reconfigurations (uint32 wraparound).
+  - Timestamps are integer ns converted once to float seconds (exact to well under 1 µs).
+- **`wait()`.** Takes an absolute deadline, rounds milliseconds up (no busy loop), and raises `OSError` on
+  POLLERR/POLLHUP/POLLNVAL.
+- **Cleanup.**
+  - Idempotent.
+  - Releases the fds on a partial initialization.
+  - `close()` restores input before release. After SIGKILL the line keeps its last state, which is input except
+    for the ~0.1 ms trigger.
+- **ABI check.** A one-off C program (`server/tools/diag/gpio_abi.c`, built in a Debian container against
+  `linux/gpio.h`) prints sizeof, offsetof and the ioctl numbers. A test compares them with the Python constants.
 
 ### 2. `EdgeUltrasonic(Ultrasonic)` in `hal/sensors.py`
 
-It keeps the public state that `measure()`, `SensorHub` and the controller rely on: `ping_start`,
-`busy_started`, `lost_echo_cm`, `discards`, `clear_t`, `echo_cm`, `batch_t`, BUSY/FAR/None. Only `ping()` and the
-lifecycle change. `measure()`, `Sample`, D7 and D8 are unchanged.
+It keeps the state that `measure()`, `SensorHub` and the controller use: `ping_start`, `busy_started`,
+`lost_echo_cm`, `discards`, `clear_t`, `echo_cm`, `batch_t`, and the results BUSY / FAR / None. New:
+
+- `meas_t`: the observation time of the newest valid ping (see §4).
+- `stop`: a `threading.Event` checked between pings and in every wait slice.
+
+**Constants (module properties; the constants they rely on are counted when broken)**
+
+| Name | Value | Meaning |
+|---|---|---|
+| `RISE_MIN_S` | 0.35 ms | The module raises its line no earlier than this after the trigger falls (measured ≥ 383 µs). |
+| `PULSE_MIN_S` | 0.1 ms | No real echo is shorter (1.7 cm, inside the module's 2 cm minimum range; measured glitches ≥ 0.2 ms). |
+| `FALL_LAT_S` | 0.1 ms | Allowance for a late fall timestamp (spike 3: ≤ 75 µs). It is subtracted from every width. |
+| `ARM_CLEAN_S` | `RISE_MIN_S + PULSE_MIN_S` = 0.45 ms | With the blind window up to this, no complete pulse can hide before arming. |
 
 **Ping sequence**
 
-1. If a long cycle is in progress (`_busy_since`), stay armed. Read the events. A fall ends the cycle at its kernel
-   timestamp. With no fall yet, return BUSY while the cycle is ≤ 0.6 s old; after that the line is stuck: None,
-   counted as `stuck`.
-2. If the line reads high when no cycle is known, the module is busy, possibly from a previous run. Record
-   `_busy_since = now` and return BUSY. This never sets `busy_started`, and the line is never driven low against
-   the module.
-3. Drain stale events. Edges seen while idle are counted as `stray`.
-4. `output_low()`, then sleep 2 ms (as today).
-5. Take `ping_start = monotonic()`, which stays the D7 "nothing there" time.
-6. Trigger: `set(1)`, sleep 10 µs, `set(0)`. Then `t_end = monotonic()`.
-7. `arm()`, then `t_armed = monotonic()` and `high = get()`.
-8. Wait for edges with `poll` until a fall ends the first pulse, or until `t_end + 40 ms`.
+1. **Long cycle in progress (`_busy_since` set).** The line stays armed.
+   - Read the events. A delivered fall, followed by a low level, ends the cycle. A new rise after it means the
+     module is still answering, so keep waiting.
+   - With no fall yet, return BUSY while the cycle is ≤ 0.6 s old; after that, None (`stuck`).
+   - A low level with no fall delivered is `lost_fall`: the cycle ends, and the next ping is treated as unwatched
+     (`lost_echo_cm = 0`).
+   - Ending a cycle never creates `clear_t` and never re-dates an old echo.
+2. **Line high with no cycle known** (start-up, or after a discarded ping).
+   - Arm, record `_busy_since = now` once (no reset on later calls), and return BUSY with `busy_started = False`.
+   - Never drive the line.
+3. `output_low()`, then **drain**. Every queued event is now from before this ping: count it as `tail` (the
+   previous ping's extra pulses), and keep the seqno continuity.
+4. Sleep 2 ms. Check that the line still reads low (else go to 2).
+5. `ping_start = monotonic()` (D7's "nothing there" time, as today).
+6. `set(1)`, sleep 10 µs.
+7. `t_fall_lo = monotonic()`, then `set(0)`. The physical fall happens after `t_fall_lo`.
+8. `arm()`, then `t_armed = monotonic()` and `high = get()`; `t_high = monotonic()`.
+   - The blind window is `B = t_armed − t_fall_lo` (an upper bound).
+9. **Wait** in slices of ≤ 40 ms against absolute deadlines until the first pulse ends (or 40 ms after its rise):
+   - no rise by `t_fall_lo + 30 ms` gives `no_rise`.
+   - Before any timeout decision, drain once more; an event counts by its timestamp, not by its delivery time.
+10. **After the first fall**, linger 0.3 ms. If a second rise comes, follow it to its fall (at most 40 ms) before
+    returning, and count it as `multi` with its width. The reading is still the first pulse.
+    - Without this, the glitch-then-echo pattern (1.9 % of pings) would make the next ping find the line high.
 
-**Rules: a reading is never farther than the echo**
+**Rules: a reading is never farther than the first echo, and "nothing there" only when no echo can have been missed**
+
+`width = F − R − FALL_LAT_S` (with the rise bound below), floored at 0.
 
 | Case | Result |
 |---|---|
-| Arm late: `t_armed − t_end > ARM_LATE_S` (0.6 ms) | Discard as `late_arm`; `lost_echo_cm = 0`. A pulse may have ended unseen. |
-| First event R, then F | Width = F − R, exact to the interrupt latency. |
-| First event F, and the line was high at arm (rise before arming) | Rise bound = `t_armed`, an upper bound, so the width is a lower bound and the reading is never farther. Error ≤ `t_armed − (t_end + 383 µs)` ≤ ~3.7 cm. |
-| Width > 12 ms (on the lower bound) | FAR, certain. |
-| Rise seen or line high, no fall by 40 ms | BUSY, `busy_started = True` (the kernel saw every edge after arming). `_busy_since` = rise bound; stay armed. |
-| Line low at arm and no event by 30 ms | None (`no_rise`). If the arm was later than `RISE_MIN_S` (350 µs), `lost_echo_cm = 0`. |
-| Events out of order (two of one kind, or F first while low at arm) | Discard as `edges`; `lost_echo_cm = 0`. The kernel reads the level in its interrupt thread, so a pulse shorter than that thread's latency shows as F F. |
-| `line_seqno` gap (kernel buffer overflow) | Discard as `seq_gap`; `lost_echo_cm = 0`. |
-| Pulses after the first one | Counted as `multi`, with the second pulse's width logged. The first pulse wins (today's semantics, safe direction). |
-| R earlier than `RISE_MIN_S` after the trigger | Counted as `early_rise`. This is evidence against the measured rise floor; the reading is still used. |
+| `B > ARM_CLEAN_S` | A complete pulse may have hidden before arming. No distance, no FAR, no `clear_t`, `busy_started = False`; `lost_echo_cm = 0`; `late_arm`. If the line is high at arm, keep tracking it as a cycle. |
+| First event R (with `R ≥ t_fall_lo + RISE_MIN_S`), then F | The width above. FAR if it exceeds 12 ms. |
+| R earlier than `t_fall_lo + RISE_MIN_S` | `early_rise`: the floor is broken. Discard the ping (`lost_echo_cm = 0`) and log an error. Five in a row switch the server to the polling implementation, logged. |
+| No R, first event F, line high at arm, `B ≤ ARM_CLEAN_S` | The rise came before arming: rise bound = `t_armed` (upper), so the width is a lower bound. `F ≤ t_armed` reads as 0 cm. |
+| Any pulse shorter than `PULSE_MIN_S` | `short_pulse`: the floor is broken. Discard and log, as for `early_rise`. |
+| Rise known (R, or high at arm with `B ≤ ARM_CLEAN_S`), no F by rise + 40 ms, line still high | BUSY. `busy_started = True` only if nothing in this table made the ping uncertain. Stay armed. |
+| No F delivered but the line is low at the deadline | `lost_fall`: discard, `lost_echo_cm = 0`. |
+| Line low at arm and no event by 30 ms | None (`no_rise`); `lost_echo_cm = 0` if `B > ARM_CLEAN_S`. |
+| Events out of order: two of one kind, or F first while low at arm | Discard (`edges`), `lost_echo_cm = 0`. |
+| `line_seqno` gap | Discard (`seq_gap`), `lost_echo_cm = 0`. |
+| A read or ioctl error | Discard (`io_error`) and log. `lost_echo_cm = 0`, so the fault path counts it. |
 
-**Remaining blind spot:** a pulse that starts and ends between the trigger and a ≤ 0.6 ms arm. It rises
-≥ 383 µs after the trigger (measured), so it is shorter than ~220 µs, an object closer than ~3.7 cm. That is
-at the module's minimum range and far inside every stop margin, so the car stops long before. This replaces
-the polling blind spot, which allowed dips anywhere in the echo.
+**Residuals (documented in D9):**
 
-### 3. Selection, fallback and lifecycle (`hal/real.py`, `__main__.py`)
+- **Merged edges.** Edges closer together than the kernel's handling latency (tens of µs; kinds correct from about
+  60 µs, spike 3) merge silently in pairs.
+  - The cases that matter: a pulse with a dip shorter than that, or a stray pulse ending within it.
+  - Odd merges are caught by the order rule.
+  - This replaces the polling blind spot (dips under ~70 µs normally, up to 1 ms under a stall).
+- **Module behaviour.** The floors (`RISE_MIN_S`, `PULSE_MIN_S`) describe this module. They are checked on every
+  ping and fall back to polling when broken.
 
-- **Selection.** A new option `--us-timing auto|edges|poll` (default `auto`) picks the implementation.
-  - `auto` uses edges when the line request succeeds, otherwise polling with one warning in the log.
-  - The dry-run backend, which uses the real sensors, follows the same rule.
-- **`SensorHub`** takes the ultrasonic object instead of constructing it (an injectable factory). That lets
-  tests run both implementations.
-- **GIL switch interval.** The 0.5 ms setting applies only in polling mode.
+### 3. Selection, fallback, lifecycle
+
+- **`--us-timing auto|edges|poll`** (default `auto`).
+  - `auto` probes edge support at start (request input, arm, disarm, while the line is idle).
+  - It falls back to polling only when the uAPI is missing or rejects edges (ENOENT, ENOTTY, EINVAL).
+  - EBUSY (the line is held elsewhere) fails loudly: the backend is unavailable, as it is today with rpi-lgpio.
+  - `edges` never falls back.
+  - Linux-only imports stay out of the simulator and forced-poll paths.
+- **Injection.** `SensorHub(..., ultrasonic=None)` takes an object. The default stays the polling `Ultrasonic` on
+  the given GPIO, so existing tests don't change. `RealBackend` and `DryRunBackend` pass the selected one.
+- **GIL switch interval.** Keep 0.5 ms in both modes: a 5 ms GIL wait between `set(0)` and `arm()` would make
+  late arms common. Restore it only when this backend changed it. Step 0 confirms the choice.
 - **Shutdown.**
-  - `_join_thread` calls `hub.us.close()` instead of `gpio.setup(pin, IN)`, because in edge mode RPi.GPIO must
-    never claim GPIO5.
-  - The edge wait is cut into `poll` slices of ≤ 40 ms, so the thread sees the stop flag within one sample.
-- **Reporting.** `/api/status` capabilities gain `ultrasonic_timing: "edges" | "poll"`; `car version` prints it.
+  - `_join_thread` sets `us.stop`, joins for 1 s, and only then calls `us.close()`. If the thread is still alive,
+    it logs and leaves the line to process exit.
+  - Polling `Ultrasonic.close()` is today's `gpio.setup(pin, IN)`.
+  - In edge mode, RPi.GPIO never touches GPIO5.
+- **Reporting.** `/api/status` → `car.ultrasonic_timing: "edges" | "poll"`, a separate field (capabilities stay
+  `dict[str, bool]`). `car version` prints it.
 
-### 4. Pre-existing stop timeout (separate task, root cause first)
+### 4. Two fixes that apply to both implementations
 
-4 of the last 19 server stops exceeded `TimeoutStopSec=2` and were SIGKILLed. ExecStopPost zeroed the motors, so
-this is not a safety issue. The cause is unknown, so no fix until it is measured:
-- Add debug log lines with timestamps for each shutdown step (aiohttp cleanup, controller, `backend.close`, join).
-- Reproduce with 20 stop/start cycles on the car.
-- Fix what the timestamps show.
+Found by the reviews; they are pre-existing.
+
+- **Observation time.** `Sample.t` is taken after the pings and the line/light reads. A stall after the echo makes
+  a distance look fresher than it is.
+  - New `Sample.dist_t` = the newest valid ping's observation time: its fall timestamp (edges), or the moment the
+    fall was seen (polling).
+  - The controller's distance freshness uses `min(now, s.t, s.dist_t)`.
+- **Releasing `blocked`.** A sample whose `echo_cm` is inside the margin never counts as clear, even if its median
+  reading does. Today a `far` median with a dropped close echo counted toward release.
+  - The ordinary freshness rule is unchanged: a newer clean reading still supersedes an older possible echo.
+
+### 5. Already done on this branch
+
+- **Stop timeout** (`a7c1711`). With one open WebSocket the server took 7.5 s to exit, and systemd killed it at 2 s.
+  - Now `on_shutdown` holds the car and closes every socket first, and `shutdown_timeout` is 0.5 s.
+  - It exits in under 1 s; tested.
+- **`gpio_cdev.py` and `FakeEdgeLine`.** The fake gets merge modelling (pairs within `irq_thread`) and delayed
+  delivery.
 
 ### Not in scope
 
-- Returning FAR at 12 ms instead of at the fall.
-- Treating a double pulse as one echo. That needs open-space edge data first: the `multi` counter collects it.
-- Triggering by toggling the pull-up so edges stay armed (an untested hardware behaviour).
-- Removing the polling implementation: it stays as the fallback.
+- Returning FAR at 12 ms.
+- Treating the double pulse as one echo (the `multi` statistics come first).
+- Removing the polling implementation (it stays as the fallback).
 
 ## Critical files
 
 | File | Role |
 |---|---|
-| `server/picar_server/hal/gpio_cdev.py` | New uAPI v2 wrapper. |
-| `server/picar_server/hal/sensors.py` | `EdgeUltrasonic`, `RISE_MIN_S`, `ARM_LATE_S`, discard reasons, `SensorHub` factory. |
-| `server/picar_server/hal/real.py` | Selection, switch interval only when polling, `close()`. |
-| `server/picar_server/__main__.py`, `app.py` | `--us-timing`, `ultrasonic_timing` in status. |
-| `deploy/car`, `car-scratch.service` | `car version` output; no unit change expected. |
-| `server/tests/fakes_hw.py` | `FakeEdgeLine`. It replays pulse schedules on the fake clock (multi pulses, long cycles), with injectable arm latency, lost or misread edges and seqno gaps. |
-| `server/tests/test_gpio_cdev.py` | Struct layout, ioctl numbers, event parsing (against a fake fd). |
-| `server/tests/test_hal_edges.py` | Every rule in the table above. |
-| `server/tests/test_hal_sensors.py`, `test_no_echo_trust.py` | Existing property and integrated tests, parametrized over both implementations where the rule is shared. |
-| `docs/decisions.md` (D9), `components.md`, `contracts.md`, `pi-tune.md`, `on-car-checklist.md` | Docs. |
+| `server/picar_server/hal/gpio_cdev.py` | uAPI v2 wrapper (line lookup, bias, validation, deadlines). |
+| `server/picar_server/hal/sensors.py` | `EdgeUltrasonic`, constants, discard reasons, `meas_t`, `stop`, `SensorHub(ultrasonic=)`, `dist_t`. |
+| `server/picar_server/hal/base.py` | `Sample.dist_t`. |
+| `server/picar_server/hal/real.py`, `dryrun.py` | Selection, shutdown order, switch interval. |
+| `server/picar_server/controller.py` | Freshness from `dist_t`; block release with `echo_cm`. |
+| `server/picar_server/__main__.py`, `app.py`, `deploy/car` | `--us-timing`; `ultrasonic_timing` in status and `car version`. |
+| `server/tools/diag/*` | The measurement scripts and the ABI check. |
+| `server/tests/fakes_hw.py` | `FakeEdgeLine`: physical waveform from the trigger's fall, arm latency, IRQ-thread kinds, merges, late stamps, delayed delivery, losses. |
+| `server/tests/test_gpio_cdev.py`, `test_hal_edges.py`, `test_shutdown.py` | New tests. |
+| `server/tests/test_hal_sensors.py`, `test_no_echo_trust.py`, `test_known_distance.py`, `test_hal_real.py`, `test_hal_dryrun.py`, `test_server.py` | Shared safety properties run over both implementations. Polling-only stall tests stay polling-only. |
+| `docs/decisions.md` (D9), `components.md`, `contracts.md`, `protocol.md`, `pi-tune.md`, `on-car-checklist.md` | Docs. |
 
 ## Verification
 
-1. **Tests (Docker).** `docker compose run --rm server-test` must pass in full, including these properties:
-   - For every arm latency 0–0.6 ms and every echo width 0.2–27 ms, the reading is never farther than the echo.
-   - A pulse that could have ended unseen always surfaces as `lost_echo_cm`.
-   - Long cycles are tracked to their fall.
-   - The integrated `Car` test stops at full speed in front of a hidden echo with the edge implementation.
-2. **On the car, stationary (no motion).** Deploy, then for 10 minutes compare against the passive `/dev/gpiomem`
-   observer (`sigwatch.py`) on the same pings:
-   - Every edge reading is within the measured bounds of the observer's.
-   - Per-minute discard counters: `late_arm` < 0.5 %, `early_rise` = 0, `edges` and `seq_gap` = 0.
-   - Server CPU (`ps`) against polling mode.
-   - 20 stop/start cycles without a timeout, once part 4 is done.
-3. **On the car, with the owner.** Each motion step is announced first and starts only on "go":
-   - A wall approach at 30/60/100 %: stop distances not worse than D8 on polling.
-   - An open-space drive: no `sensor_fault`; collect the `multi` statistics.
-4. **Fallback.** `--us-timing poll` behaves exactly as `913aed2`; `auto` with the line held by another process
-   falls back with one warning.
+1. **Tests (Docker).** The full suite passes, including these properties.
+   - **Never farther.** Over arm latency 0–1 ms, rise delay 0.35–0.45 ms, widths 0.1–27 ms (dense around 12 ms),
+     IRQ latency up to `FALL_LAT_S` and a stall at every clock call, the reading is never farther than the first
+     pulse and never FAR when the first pulse ended within 12 ms.
+   - **Hidden first pulse.** It is followed by an echo, FAR, or a long cycle, with plausible alternating events and
+     no seqno gap. It always gives `lost_echo_cm` and never `clear_t`, or else `B ≤ ARM_CLEAN_S` makes it impossible.
+   - **Long cycles.**
+     - Start-up high, stuck high, a fall without an event, overflow while busy, a discard followed by busy.
+     - No output while the module drives high.
+     - No new `clear_t` for an existing cycle.
+     - D5's fault-counter behaviour is preserved.
+   - **Controller.**
+     - Mixed valid and discarded batches.
+     - Delayed delivery after the echo and after the deadline.
+     - Stale buffered readings.
+     - Release of `blocked`.
+     - The integrated `Car` test at full speed with the edge implementation.
+     - Checks on `clear_t`, `echo_cm`, `echo_t`, `dist_t`, motor state and the stopping deadline.
+   - **Lifecycle.**
+     - Selection (missing uAPI, EINVAL on arm, EBUSY).
+     - `close()` during a wait.
+     - A timed-out join.
+     - No fd leak.
+2. **ABI.** The C check matches the Python constants.
+3. **On the car, stationary.**
+   - **10 minutes on edges, under load.** Log per minute: total pings, every discard and diagnostic counter, `B`
+     percentiles, and the raw event sequences of every anomalous ping. Expected: `late_arm` < 0.1 % (or the
+     pull-up trigger makes it 0), `early_rise` = `short_pulse` = 0.
+   - **Controlled source.** The GPIO6 pull-toggle test (spike 3) checks the timestamps and the short-pulse limit
+     under the same load.
+   - **Passive observer.** It runs beside the server and reports each mismatch with the server's readings (its own
+     limits are recorded: polling at about 2 µs, one core).
+   - **Server CPU.** Compared with polling mode.
+   - **Restarts.** 20 stop/start cycles, all under 1 s, with coexisting rpi-lgpio lines (GPIO17/27) as the
+     service user.
+4. **On the car, with the owner.** Each motion step is announced and starts on "go":
+   - A wall approach at 30/60/100 %: stops not later than polling D8.
+   - An open-space drive: no `sensor_fault`, D7 trust as before, `multi` statistics collected.
+5. **Fallback.**
+   - `--us-timing poll` behaves as `913aed2`.
+   - `auto` on a kernel without edge support falls back.
+   - EBUSY makes the backend unavailable with a clear error.
