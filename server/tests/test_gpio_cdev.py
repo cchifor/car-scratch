@@ -65,7 +65,7 @@ def test_event_reading_from_a_nonblocking_fd(monkeypatch):
     import os
     r, w = os.pipe()
     line = cd.EdgeLine.__new__(cd.EdgeLine)
-    line.fd = r
+    line.fd, line.offset = r, 5
     os.set_blocking(r, False)
     import select
     line._poll = select.poll()
@@ -82,3 +82,89 @@ def test_event_reading_from_a_nonblocking_fd(monkeypatch):
 def test_an_unavailable_chip_raises_oserror(tmp_path):
     with pytest.raises(OSError):
         cd.EdgeLine(5, chip=str(tmp_path / "no-gpiochip"))
+
+
+# Printed by tools/diag/gpio_abi.c from linux/gpio.h (gcc:14, Debian trixie headers, 2026-11-22).
+HEADER = {
+    "sizes": dict(request=592, config=272, event=48, values=16, line_info=256, chip_info=68),
+    "request": dict(consumer=256, config=288, num_lines=560, event_buffer_size=564, fd=588),
+    "config": dict(num_attrs=8, attrs=32, attr_size=24, mask=16, value=8),
+    "event": dict(id=8, offset=12, line_seqno=20),
+    "ioctl": dict(get_line=0xC250B407, set_config=0xC110B40D, get_values=0xC010B40E, set_values=0xC010B40F,
+                  get_lineinfo=0xC100B405, chipinfo=0x8044B401),
+    "flags": dict(input=0x4, output=0x8, rising=0x10, falling=0x20, bias_disabled=0x400),
+}
+
+
+def test_constants_match_the_kernel_header():
+    h = HEADER
+    assert (cd.REQUEST_SIZE, cd.CONFIG_SIZE, cd.EVENT.size, cd.VALUES.size, cd.LINE_INFO_SIZE, cd.CHIP_INFO_SIZE) == \
+        tuple(h["sizes"].values())
+    assert (cd.LINES_MAX * 4, cd._REQ_CONFIG_AT, cd._REQ_COUNTS_AT, cd._REQ_COUNTS_AT + 4, cd._REQ_FD_AT) == \
+        tuple(h["request"].values())
+    assert (cd._CFG_HEAD.size, cd._CFG_ATTR.size) == (h["config"]["attrs"], h["config"]["attr_size"])
+    assert (cd.GET_LINE_IOCTL, cd.SET_CONFIG_IOCTL, cd.GET_VALUES_IOCTL, cd.SET_VALUES_IOCTL, cd.GET_LINEINFO_IOCTL,
+            cd.GET_CHIPINFO_IOCTL) == tuple(h["ioctl"].values())
+    assert (cd.FLAG_INPUT, cd.FLAG_OUTPUT, cd.FLAG_EDGE_RISING, cd.FLAG_EDGE_FALLING, cd.FLAG_BIAS_DISABLED) == \
+        tuple(h["flags"].values())
+    ev = cd.EVENT.pack(1, 2, 3, 4, 5)
+    assert struct.unpack_from("<I", ev, h["event"]["id"])[0] == 2
+    assert struct.unpack_from("<I", ev, h["event"]["offset"])[0] == 3
+    assert struct.unpack_from("<I", ev, h["event"]["line_seqno"])[0] == 5
+
+
+def test_events_of_another_line_or_kind_are_rejected():
+    with pytest.raises(OSError):
+        cd.parse_events(_event(1, 1, 1, offset=6), offset=5)
+    with pytest.raises(OSError):
+        cd.parse_events(_event(1, 3, 1), offset=5)
+    assert cd.parse_events(_event(1, 2, 1), offset=5)[0].rising is False
+
+
+def _pipe_line():
+    import os
+    import select
+    r, w = os.pipe()
+    line = cd.EdgeLine.__new__(cd.EdgeLine)
+    line.fd, line.offset = r, 5
+    os.set_blocking(r, False)
+    line._poll = select.poll()
+    line._poll.register(r, select.POLLIN)
+    return line, w
+
+
+def test_wait_raises_on_a_hangup():
+    import os
+    line, w = _pipe_line()
+    os.close(w)
+    with pytest.raises(OSError):
+        line.wait(0.01)
+    os.close(line.fd)
+
+
+def test_wait_rounds_short_timeouts_up_instead_of_returning_at_once():
+    import time
+    line, w = _pipe_line()
+    t0 = time.monotonic()
+    assert line.wait(0.0004) is False
+    assert time.monotonic() - t0 >= 0.0009                 # a whole millisecond, not a busy 0
+    import os
+    os.close(w)
+    os.close(line.fd)
+
+
+def test_find_line_without_a_gpio_chip_raises_file_not_found(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        cd.find_line("GPIO5", chips=[])
+    with pytest.raises(FileNotFoundError):
+        cd.find_line("GPIO5", chips=[str(tmp_path / "gpiochip9")])
+
+
+def test_close_is_idempotent():
+    line, w = _pipe_line()
+    import os
+    line._input = cd.line_config(cd.FLAG_INPUT)
+    os.close(w)
+    line.close()                                         # input() fails on a pipe: still closes
+    line.close()
+    assert line.fd is None
