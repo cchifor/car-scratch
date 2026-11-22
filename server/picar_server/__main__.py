@@ -30,11 +30,13 @@ def main(argv=None) -> None:
     p.add_argument("--config", type=Path, default=d.config, help="calibration.json directory")
     p.add_argument("--allow-host", action="append", default=[], help="extra accepted Host name (repeatable)")
     p.add_argument("--allow-origin", action="append", default=[], help="extra accepted Origin (repeatable)")
+    p.add_argument("--us-timing", choices=["auto", "edges", "poll"], default="auto",
+                   help="ultrasonic echo timing: kernel edge timestamps, polling, or edges with a polling fallback")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    settings = Settings(port=a.port, hardware=a.hardware, www=a.www, examples=a.examples, source=a.source,
+    settings = Settings(port=a.port, hardware=a.hardware, us_timing=a.us_timing, www=a.www, examples=a.examples, source=a.source,
                         data=a.data, config=a.config, allow_hosts=_split(a.allow_host),
                         allow_origins=_split(a.allow_origin))
     # shutdown_timeout: how long aiohttp waits for open requests after on_shutdown closed the sockets; cleanup

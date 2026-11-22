@@ -90,6 +90,9 @@ class Hub:
     def hw_info(self) -> dict:
         info = {"backend": self.car.backend.name if self.car.backend is not None else "none",
                 "capabilities": self.car.capabilities()}
+        timing = getattr(self.car.backend, "ultrasonic_timing", None)
+        if timing is not None:
+            info["ultrasonic_timing"] = timing              # "edges" | "poll" (decision D9); real/dry-run only
         if self.hw.get("error"):
             info["error"] = self.hw["error"]
         return info

@@ -220,6 +220,8 @@ class FakeEdgeLine:
       irq_thread   the kernel's IRQ-thread latency: an edge's kind is the level read this long after it, and an
                    edge inside a previous edge's thread window is timestamped when the window ends (oneshot IRQ)
       drop_next    the next N recorded events are lost (a line_seqno gap)
+      rise_late, fall_late   hard-IRQ entry latency added to rising / falling edges' timestamps
+      fail         an OSError raised by the next call of that name ("arm", "get", "events", ...)
     """
     RISE_DELAY = 0.0004                                 # measured 383-417 us after the trigger
 
@@ -231,6 +233,8 @@ class FakeEdgeLine:
         self.arm_at = 1.0
         self.irq_thread = 0.0
         self.drop_next = 0
+        self.rise_late = self.fall_late = 0.0
+        self.fail: set = set()
         self.mode = "input"                             # input | armed | output
         self.out_value = 0
         self.pings = self.contention = self.arms = 0
@@ -277,11 +281,11 @@ class FakeEdgeLine:
             return
         now = self.clock.now
         edges = sorted([(r, True) for r, _ in self._pulses] + [(f, False) for _, f in self._pulses])
-        for t, _kind in edges:
+        for t, kind in edges:
             if t <= self._emitted or t < self._armed_from or t > now:
                 continue
             self._emitted = t
-            ts = t
+            ts = t + (self.rise_late if kind else self.fall_late)
             if self.irq_thread and t < self._last_irq + self.irq_thread:
                 ts = self._last_irq + self.irq_thread    # masked until the previous edge's thread finished
             if ts > now:
@@ -296,11 +300,19 @@ class FakeEdgeLine:
             self._queue.append((ts, rising, self._seq))
 
     def _next_edge_after(self, t: float):
-        times = [x for r, f in self._pulses for x in (r, f) if x > t]
+        """When the next not-yet-recorded edge becomes readable (its timestamp, latencies included)."""
+        times = [x + (self.rise_late if x == r else self.fall_late)
+                 for r, f in self._pulses for x in (r, f) if x > t]
         return min(times) if times else None
 
     # -- EdgeLine API -------------------------------------------------------------------------------------
+    def _maybe_fail(self, name: str) -> None:
+        if name in self.fail:
+            self.fail.discard(name)
+            raise OSError(5, f"fake {name} failure")
+
     def output_low(self) -> None:
+        self._maybe_fail("output_low")
         if self._module_high(self.clock.now):
             self.contention += 1
         self.mode, self.out_value, self._armed_from = "output", 0, None
@@ -313,6 +325,7 @@ class FakeEdgeLine:
         self.out_value = value
 
     def arm(self) -> None:
+        self._maybe_fail("arm")
         lat = self.arm_latency.pop(0) if isinstance(self.arm_latency, list) else self.arm_latency
         self.arms += 1
         start = self.clock.now
@@ -325,6 +338,7 @@ class FakeEdgeLine:
         self.mode, self._armed_from = "input", None
 
     def get(self) -> int:
+        self._maybe_fail("get")
         if self.mode == "output":
             return self.out_value
         return 1 if self._module_high(self.clock.now) else 0

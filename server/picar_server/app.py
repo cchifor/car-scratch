@@ -37,6 +37,7 @@ MAX_BODY = MAX_FILE + (1 << 20)
 class Settings:
     port: int = 8080
     hardware: str = "auto"                 # auto | real | dryrun | sim | none
+    us_timing: str = "auto"                # auto | edges | poll: how the real/dry-run backend times echoes (D9)
     www: Optional[Path] = None
     examples: Optional[Path] = None
     source: Optional[Path] = None
@@ -61,7 +62,7 @@ def make_backend(settings: Settings, cal: dict):
         if kind == "sim":
             return SimBackend(load_world(DEFAULT_WORLD), cal), {}
         module, cls = ("dryrun", "DryRunBackend") if kind == "dryrun" else ("real", "RealBackend")
-        return getattr(importlib.import_module(f"picar_server.hal.{module}"), cls)(cal), {}
+        return getattr(importlib.import_module(f"picar_server.hal.{module}"), cls)(cal, us_timing=settings.us_timing), {}
     except Exception as e:  # ImportError, missing I2C bus, permissions ...
         log.error("hardware unavailable (%s): %s", kind, e)
         return None, {"error": f"{type(e).__name__}: {e}"}

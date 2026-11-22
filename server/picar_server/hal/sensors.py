@@ -52,6 +52,9 @@ class SystemClock:
 
 
 class Ultrasonic:
+    timing = "poll"                                # how echoes are timed (EdgeUltrasonic: "edges")
+    stop = None                                    # EdgeUltrasonic: a threading.Event that ends a wait early
+
     def __init__(self, gpio, clock, pin: int = US_PIN):
         self.gpio, self.clock, self.pin = gpio, clock, pin
         self._busy_since: Optional[float] = None   # start of an echo still high at ECHO_STUCK_S (pin left as input)
@@ -150,6 +153,10 @@ class Ultrasonic:
         lo = max(0.0, clean_high - start) if rise_clean and clean_high is not None else 0.0
         self.lost_echo_cm = min(lo, ECHO_FAR_S) * 34300 / 2
 
+    def close(self) -> None:
+        """Leave the pin an input (never driven)."""
+        self.gpio.setup(self.pin, self.gpio.IN)
+
     def measure(self, n: int):
         """Median of n pings (needs 2 valid when n == 3); BUSY when the module went into its long cycle before
         enough valid pings (later pings would only see it busy); None = no valid ping. With two valid pings the
@@ -183,10 +190,13 @@ class SensorHub:
 
     def __init__(self, bus, gpio, lock, clock, motion: Callable[[], tuple[int, int]],
                  line_enabled: Callable[[], bool] = lambda: False, us_pin: int = US_PIN, motor_lock=None,
-                 light_channels: Callable[[], Sequence[int]] = lambda: DEFAULT_LIGHT_CHANNELS):
+                 light_channels: Callable[[], Sequence[int]] = lambda: DEFAULT_LIGHT_CHANNELS,
+                 ultrasonic: Optional[Ultrasonic] = None,
+                 fallback: Optional[Callable[[], Ultrasonic]] = None):
         self.motor_lock = motor_lock               # outer lock: held across "motors stopped?" and the line probe
         self.bus, self.lock, self.clock, self.motion, self.line_enabled = bus, lock, clock, motion, line_enabled
-        self.us = Ultrasonic(gpio, clock, us_pin)
+        self.us = ultrasonic if ultrasonic is not None else Ultrasonic(gpio, clock, us_pin)
+        self._us_fallback = fallback               # replaces an edge-timed sensor whose module checks keep failing
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
         self._discard_log_t = clock.monotonic()
@@ -225,6 +235,14 @@ class SensorHub:
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
         self._log_discards()
+        if getattr(self.us, "broken", False) and self._us_fallback is not None:
+            log.error("ultrasonic: edge timing keeps breaking the module's measured limits; timing by polling")
+            try:
+                self.us.close()
+            except Exception:                          # noqa: BLE001
+                pass
+            self.us = self._us_fallback()
+            self._us_fallback = None
         self.echo_cm = self.us.echo_cm
         self.echo_t = self.us.batch_t
         self.dist_t = None if v is None or v is BUSY else self.us.meas_t
@@ -257,6 +275,14 @@ class SensorHub:
             log.info("ultrasonic: pings discarded in the last %.0f s: %s", now - self._discard_log_t,
                      " ".join(f"{k} {v}" for k, v in sorted(d.items())))
         d.clear()
+        diag, blind = getattr(self.us, "diag", None), getattr(self.us, "blind", None)
+        if blind:
+            b = sorted(blind)
+            log.info("ultrasonic edges: %d pings, blind window us p50 %.0f p99 %.0f max %.0f; %s", len(b),
+                     b[len(b) // 2] * 1e6, b[min(len(b) - 1, int(len(b) * 0.99))] * 1e6, b[-1] * 1e6,
+                     " ".join(f"{k} {v}" for k, v in sorted(diag.items())) or "no diagnostics")
+            blind.clear()
+            diag.clear()
         self._discard_log_t = now
 
     # -- PCF8591 ----------------------------------------------------------------------------------------
