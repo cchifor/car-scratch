@@ -61,6 +61,14 @@ The spike scripts live in `server/tools/diag/` (`edgespike.py`, `irqlat.py` and 
    This uses the weak internal pull resistors only (no contention possible). If it works reliably over 1 000
    pings, §2 switches to it, and the rules for the arming window drop out. Otherwise §2 as written.
 
+**Step 0 outcome (as built, 2026-11-22).**
+- **The pull-up trigger works.** The module answered 1000 of 1000 idle and 498 of 500 under load.
+- **The driven trigger doesn't, on this Pi.** It missed 54 % of rises on an idle CPU, because re-arming outran the
+  rise.
+- **So §2 switched to the pull-up trigger:** edges stay armed and the line is never driven. The rules for the
+  arming window dropped out; D9 has the rules as built.
+- **The measured rise floor** is 289 µs from before the trigger call, so `RISE_MIN_S` is 0.25 ms.
+
 ### 1. `hal/gpio_cdev.py`: a uAPI v2 wrapper, no new package
 
 Already written and checked on the car on an unused input line: request, arm, read, wait, release. Changes:

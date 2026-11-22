@@ -355,13 +355,15 @@ the real sensors, the real car and the dry-run car.
   (takes the ultrasonic object and a polling fallback), `set_near_hint`, `capabilities()`, `probe()`; PCF8591 light
   at `0x48`, line follower at `0x11`.
 - `ultrasonic_edges.py` (decision D9):
-  - `EdgeUltrasonic(line, clock, pin, stop)`: kernel-timestamped edges, with the same interface. It adds `diag`,
-    `blind` and `second_widths`, which are logged per minute, and `broken`, which switches the hub to polling.
-  - `open_edge_ultrasonic()` finds `GPIO5` by name and checks that edges are accepted.
+  - `EdgeUltrasonic(line, clock, pin, stop)`: kernel-timestamped edges, with a pull-up trigger, so the line is
+    never driven. It has the same interface, plus `diag`, `trigger_s` and `second_widths` (logged per minute),
+    `probe()`, and `broken` (switches the hub to polling once the line is free).
+  - `open_edge_ultrasonic()` finds `GPIO5` by name, checks that edges are accepted, and checks that the module
+    answers pull-up triggers.
   - `select_ultrasonic(mode, ...)` picks the implementation for `--us-timing`.
 - `gpio_cdev.py`: the GPIO character device (uAPI v2) for one line.
-  - `EdgeLine`: `output_low()`, `arm()`, `input()`, `set()`, `get()`, `wait(timeout)` and `events()` (`Edge(rising,
-    t, seqno)`).
+  - `EdgeLine`: `arm()` (both edges, pull-down), `pull_up()`, `input()`, `get()`, `wait(timeout)`, and `events()`
+    returning `Edge(rising, t, seqno)`.
   - `find_line(name)`, `line_config()`, `parse_events()`.
   - The layouts are asserted at import against the values from `tools/diag/gpio_abi.c`.
 - `real.py`: `_HardwareBase` (both locks, the forward inhibit and full-stop latches, the sensor thread
@@ -369,7 +371,7 @@ the real sensors, the real car and the dry-run car.
   channels before anything else, direction GPIO27 right / GPIO17 left with HIGH = forward, `set_trim`).
 - `dryrun.py`: `DryRunBackend`, real sensors, motors zeroed once at start, motor and servo writes only logged.
 
-**Configuration.** `--hardware`, `--us-timing auto|edges|poll`; calibration `steer_trim_deg`, `line_enabled`,
+**Configuration.** `--hardware`, `--us-timing poll|edges|auto` (default `$CAR_SCRATCH_US_TIMING`, else `poll`); calibration `steer_trim_deg`, `line_enabled`,
 `light_channels`, `line_black_high`. Ultrasonic diagnostics for the car: `server/tools/diag/README.md`.
 
 **Tests.** [`test_hal_real.py`](../server/tests/test_hal_real.py) (write order, retries, lock order, deadline

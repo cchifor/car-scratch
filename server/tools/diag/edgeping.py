@@ -6,10 +6,10 @@ GPIO5); nothing moves. From the release's server directory:
     python3 tools/diag/edgeping.py b [tries]                              # does a pull-up alone trigger the module?
     systemctl --user start car-scratch
 
-a: runs EdgeUltrasonic.measure(3) at the server's cadence for `seconds`, with `load_procs` busy processes and the
-   GIL switch interval at `switch_ms`; prints the blind-window percentiles, results, discards, diagnostics and CPU.
-b: keeps edges armed and raises the line with the internal pull-up only (never driven), then back to pull-down; if
-   the module answers ~0.4 ms later, the line would never need to be an output (no arming window at all).
+a: opens the edge sensor as the server does (line lookup, start-up probe), then runs EdgeUltrasonic.measure(3) at
+   the server's cadence for `seconds`, with `load_procs` busy processes and the GIL switch interval at `switch_ms`;
+   prints the trigger call percentiles, results, discards, diagnostics and CPU.
+b: the raw pull-up trigger test (edges armed, the line never driven): does the module answer, and when.
 """
 import collections
 import fcntl
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from picar_server.hal import gpio_cdev as cd                         # noqa: E402
 from picar_server.hal.sensors import BUSY, FAR, SystemClock           # noqa: E402
-from picar_server.hal.ultrasonic_edges import EdgeUltrasonic          # noqa: E402
+from picar_server.hal.ultrasonic_edges import TRIGGER_MAX_S, open_edge_ultrasonic   # noqa: E402
 
 
 def burn():
@@ -44,12 +44,10 @@ def part_a(seconds: float, load: int, switch_ms: float) -> None:
     for p in procs:
         p.start()
     sys.setswitchinterval(switch_ms / 1000.0)
-    path, off = cd.find_line("GPIO5")
-    line = cd.EdgeLine(off, chip=path, consumer="edgeping")
-    us = EdgeUltrasonic(line, SystemClock(), off)
+    us = open_edge_ultrasonic(SystemClock())
     results = collections.Counter()
     readings = []
-    blind_all = []
+    trig_all = []
     c0 = resource.getrusage(resource.RUSAGE_SELF)
     t_end = time.monotonic() + seconds
     samples = 0
@@ -58,8 +56,8 @@ def part_a(seconds: float, load: int, switch_ms: float) -> None:
             t0 = time.monotonic()
             v = us.measure(3)
             samples += 1
-            blind_all += list(us.blind)
-            us.blind.clear()
+            trig_all += list(us.trigger_s)
+            us.trigger_s.clear()
             if v is BUSY:
                 results["busy"] += 1
             elif v is None:
@@ -74,8 +72,9 @@ def part_a(seconds: float, load: int, switch_ms: float) -> None:
         us.close()
     c1 = resource.getrusage(resource.RUSAGE_SELF)
     cpu = (c1.ru_utime + c1.ru_stime) - (c0.ru_utime + c0.ru_stime)
-    print(f"A load={load} switch={switch_ms}ms: {samples} samples, {len(blind_all)} pings, CPU {cpu / seconds * 100:.1f} %")
-    print(f"  blind window us {pct(blind_all)}  over 450 us: {sum(b > 0.00045 for b in blind_all)}")
+    print(f"A load={load} switch={switch_ms}ms: {samples} samples, {len(trig_all)} triggers, CPU {cpu / seconds * 100:.1f} %")
+    print(f"  trigger fall call us {pct(trig_all)}  over the {TRIGGER_MAX_S * 1e6:.0f} us limit: "
+          f"{sum(b > TRIGGER_MAX_S for b in trig_all)} of {len(trig_all)}")
     print(f"  results {dict(results)}  readings cm {pct(readings, 1)}")
     print(f"  discards {dict(us.discards)}  diag {dict(us.diag)}  second pulses ms {pct(list(us.second_widths), 1e3)}")
 

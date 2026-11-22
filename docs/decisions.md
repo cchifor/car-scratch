@@ -298,6 +298,7 @@ next reading.
 ## D9 — Time ultrasonic echoes from kernel edge timestamps (2026-11-22)
 
 **Context.** The polling ping (D5, D8) has three limits:
+
 - **Blind spot.** It can't see a dip shorter than its polling gap: the D8 residual.
 - **CPU.** It holds a core while an echo is high: 21 % of a core in a 150-ping comparison, against 2 % for edges.
 - **Accuracy.** It reads widths short: 15–156 µs, median 78 µs.
@@ -306,62 +307,96 @@ The owner asked for the kernel-timestamp version (plan item M8, plan in
 `docs/plans/2026-11-22-ultrasonic-edge-timing-plan.md`).
 
 **Decision.**
+
 - **Timing.** The server times echoes from the GPIO character device's edge events. The kernel stamps each edge in
   its interrupt handler, on the clock behind `time.monotonic()`.
   - `hal/gpio_cdev.py` is a pure-Python uAPI v2 wrapper. Its layouts were checked against `linux/gpio.h`
     (`tools/diag/gpio_abi.c`).
   - `hal/ultrasonic_edges.py` holds `EdgeUltrasonic`. It has the polling sensor's interface, so `measure()`,
     D5, D7 and D8 are unchanged.
-- **Selection.** `--us-timing auto|edges|poll`, default `auto`.
-  - `auto` falls back to polling only when the kernel lacks the interface (ENOENT, ENOTTY, EINVAL and similar).
-  - A line held elsewhere (EBUSY) is an error, as it is for polling.
+- **Trigger.** The line is never driven.
+  - It stays an input with both edges detected, held low by the internal pull-down.
+  - A ping switches to the pull-up for about 10 µs and back, and that fall triggers the module.
+  - Edge detection is therefore on all the time. No echo can come and go between a trigger and re-arming, and
+    nothing can fight the module's output.
+- **Start-up check.** The server checks that the module answers pull-up triggers (at least 4 of 5).
+- **Selection.** `--us-timing poll|edges|auto`, or `CAR_SCRATCH_US_TIMING`.
+  - The default stays `poll` until the car validation below is complete.
+  - `auto` falls back to polling only when the kernel lacks the interface or the module ignores a pull-up trigger.
+    A line held elsewhere (EBUSY) is an error, as it is for polling.
   - `/api/status` and `car version` report the timing in use.
 
-**Why the rules look as they do.**
-- **Arming.** Edge detection only works on an input, so every ping drives the trigger and then re-arms, and arming
-  takes 0.1–0.5 ms. The module raises its line about 0.38 ms after the trigger.
-- **The rules,** in `ultrasonic_edges.py` and the plan's table:
-  - A reading is never farther than the first pulse:
-    - a fall-latency allowance of 0.1 ms (1.7 cm) is subtracted from every width;
-    - a rise before arming is bounded by the arm time.
-  - "Nothing there" (FAR, or a cleanly started long cycle) is reported only when no pulse can have been missed: the
-    blind window from the trigger's fall to the end of arming is at most 0.45 ms.
-  - Every uncertain ping records a possible echo at 0 cm. The uncertain cases:
-    - a late arm;
-    - events out of order;
-    - a sequence gap;
-    - a lost fall;
-    - an I/O error.
-  - The line is never driven while the module holds it high.
-- **Floors.** The rules rest on three measured properties of this module and kernel:
-  - the rise comes at least 0.35 ms after the trigger (measured ≥ 383 µs);
-  - no real pulse is shorter than 0.1 ms (glitches measured ≥ 0.2 ms);
-  - a fall is stamped at most 0.1 ms late (measured ≤ 75 µs).
+**Measured on the car (2026-11-22, kernel 6.18.50, Pi 3 B+).**
 
-  Each property is checked on every ping. A ping that breaks one is discarded with a possible echo, and five in a
-  row switch the server back to polling.
-- **The double pulse** (D8). After the first fall, the ping waits 0.3 ms for a second pulse and follows it to its
-  end. The reading stays the first pulse; the second is counted as `multi`.
-- **Shutdown.** The line is closed only after the sensor thread has stopped, so the fd is never closed under a ping.
+- **Pull-up trigger:**
+  - The module answered 1000 of 1000 triggers on an idle CPU, and 498 of 500 under a 3-core load.
+  - It rises 289–402 µs after the trigger, timed from before the pull-down call.
+  - The real sensor answered 2247 of 2247 pings idle, and 2239 of 2244 under load.
+  - The trigger call took 16–62 µs; one preempted call took 574 µs.
+- **The rejected alternative: a driven trigger, then re-arming edge detection.** On an idle CPU (clocked down),
+  re-arming outran the module's rise in 54 % of pings, and the arming window reached 459 µs.
+- **Kernel timestamps** (pull toggles on an unused pin):
+  - Edges are stamped 15–75 µs after the start of the ioctl that makes them.
+  - Measured widths never fell outside the userspace bracket.
+  - Edge kinds are wrong for pulses of about 40 µs, and right from about 60 µs.
+
+**The rules** (`ultrasonic_edges.py`):
+
+- **Our own trigger's edges.** Events stamped up to the trigger call's end plus 0.1 ms are ours and are ignored.
+  The module rises no earlier than 0.25 ms after the call starts, and a trigger call slower than 0.14 ms makes the
+  ping uncertain. So the two never mix.
+- **Never farther.** A fall-latency allowance of 0.1 ms (1.7 cm) is subtracted from every width. A reading is
+  never farther than the first pulse, as long as the kernel's interrupt entry latency stays under 0.1 ms
+  (measured ≤ 75 µs). That condition can't be checked from user space, which is one reason the default stays
+  polling until the car validation is done.
+- **"Nothing there"** (FAR, or a cleanly started long cycle) is reported only from a first pulse whose rise and fall
+  were both seen. Every uncertain ping records a possible echo at 0 cm. The uncertain cases:
+  - a slow trigger;
+  - events out of order;
+  - a sequence gap (counted from the request's start);
+  - a lost fall;
+  - a gap while following a cycle;
+  - an I/O error.
+- **Before every trigger,** the line must have been low with no edge for 2 ms. A late pulse of the previous answer
+  is never taken for this ping's echo.
+- **The double pulse** (D8). The first pulse is the reading. A second one is followed to its end and counted as
+  `multi`.
+- **Fallback.** Five pings in a row that break a measured limit, or five triggers in a row with no answer, switch
+  the server to polling. The switch happens once the line is free, and the batch's evidence is kept.
+
+**Review.** The plan had one round, and the implementation one round with two independent reviewers. No
+reading farther than the first pulse was found (120,000 fuzzed pings). The findings were fixed with tests:
+
+- the driven trigger could fight the module, so the pull-up trigger replaced it;
+- a fall queued at the deadline;
+- sequence tracking before the first event;
+- a cycle that rose again during the settle wait;
+- the fallback's state;
+- an I/O error left the line driven;
+- a leaked line on a failed start;
+- an unbounded socket close on shutdown;
+- a fake that did not model the kernel's merges.
 
 **Also fixed (pre-existing, found by the plan reviews).**
-- **Distance age.** A distance's freshness counts from its newest valid ping (`Sample.dist_t`), not from when the
-  sample was assembled.
+
+- **Distance age.** A distance's freshness counts from its newest valid ping (`Sample.dist_t`).
 - **Releasing `blocked`.** A sample whose pings heard an echo inside the margin never counts toward release.
-- **Server stop.** Before this, an open WebSocket kept the server alive 7.5 s on stop.
+- **Server stop.** An open WebSocket used to keep the server alive 7.5 s on stop.
 
-**Measured (2026-11-22, kernel 6.18.50, Pi 3 B+).**
-- **Arming.** The arm ioctl takes 133 µs median (p99 261 µs) on an idle line; through python3-libgpiod, 203 µs.
-- **Timestamps.** Edges are stamped 15–75 µs after the start of the ioctl that makes them.
-- **Edge kinds.** The kernel reports the wrong kinds for pulses of about 40 µs (43 of 200), and the right ones from
-  about 60 µs.
-- **Measured widths** never fell outside the userspace bracket (2,400 pulses).
-- **Still to do:** the blind-window distribution of the real ping sequence (`tools/diag/edgeping.py`).
+**Residuals.**
 
-**Residual: merged edges.**
-- The kernel keeps one timestamp per line and derives an edge's kind from the level in its interrupt thread. Edges
-  closer together than its handling latency (tens of µs) can merge with no sequence gap.
-- An odd number merged shows as an out-of-order sequence and is discarded.
-- An even number merged is invisible: a dip of a few tens of µs inside an echo, or a stray pulse of that length.
-- This replaces the polling blind spot, which covered dips under ~70 µs normally and up to 1 ms under a stall.
-- **Residual from D7 and D8:** something moving toward the car is seen only at the next reading.
+- **Merged edges.** The kernel keeps one timestamp per line and derives an edge's kind from the level in its
+  interrupt thread. Edges closer together than its handling latency (tens of µs) can merge with no sequence gap.
+  - An odd number merged shows as an out-of-order sequence and is discarded.
+  - An even number merged is invisible: a dip of a few tens of µs inside an echo, or a stray pulse of that length.
+  - This replaces the polling blind spot, which covered dips under ~70 µs normally and up to 1 ms under a stall.
+- **The rise floor** describes this module. A module that answers faster than 0.25 ms breaks it, which shows as
+  `early_rise` and falls back to polling.
+- **From D7 and D8:** something moving toward the car is seen only at the next reading.
+
+**Still to do before edges become the default:**
+
+1. A 10-minute stationary run under the server.
+2. A drive test with the owner. Each motion step is announced first.
+
+Then switch the default and record the results here.
