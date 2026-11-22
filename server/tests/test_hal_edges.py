@@ -262,14 +262,79 @@ def test_the_double_pulse_reads_the_first_pulse_and_leaves_the_line_free():
     assert us.lost_echo_cm is None and 58 < v <= 60 and us.diag["found_high"] == 0
 
 
-@pytest.mark.parametrize("gap_ms", [0.4, 0.8, 1.5, 1.9, 3.0])
+@pytest.mark.parametrize("gap_ms", [0.4, 0.8, 1.5, 1.9])
 def test_a_late_second_pulse_is_never_taken_for_the_next_pings_echo(gap_ms):
+    # second reviewer: check every ping, not the median. Within the measured double-pulse envelope (dips up to
+    # 0.2 ms, here up to 1.9 ms) the quiet guard keeps the late pulse out of the next ping. A pulse more than 2 ms
+    # after the answer ended would look like an answer to the next trigger (a residual, D9).
     b, us, line, clock = make()
     line.default = (D, echo_for_cm(40))
     line.queue(("multi", [(D, 0.0003), (D + 0.0003 + gap_ms / 1000, echo_for_cm(80))]))
-    s = b.hub.read()                                     # three pings back to back
-    assert s.echo_cm is not None and s.echo_cm <= 0.0003 * ue.CM_PER_S
-    assert s.dist_state != "ok" or s.dist_cm <= 40      # never the 80 cm pulse as an echo of a later ping
+    first = us.ping()
+    assert first <= 0.0003 * ue.CM_PER_S
+    for _ in range(2):
+        v = us.ping()
+        assert v is not FAR and not (isinstance(v, float) and v > 40.0), (gap_ms, v)
+        if not isinstance(v, float):
+            assert us.lost_echo_cm == 0.0 or not us.triggered, (gap_ms, v, dict(us.discards))
+
+
+def test_untriggered_pings_do_not_reset_the_failure_count():
+    # second reviewer: an early-rising module answering with long cycles; the cycle-following pings in between
+    # must not keep zeroing the count, or the fallback is never reached
+    b, us, line, clock = make()
+    line.default = ("cycle", 0.0002, 0.4015)
+    for _ in range(200):
+        us.ping()
+        clock.advance(0.04)
+        if us.broken:
+            break
+    assert us.broken and us.discards["early_rise"] == ue.FLOOR_BREAKS_MAX
+
+
+def test_a_stalled_pull_up_is_a_slow_trigger():
+    for at in range(1, 8):
+        b, us, line, clock = make()
+        line.queue((D, 0.027))
+        orig = us._wait_quiet
+
+        def quiet():
+            ok = orig()
+            clock.gap_after(2, 0.001)                    # the call after ping_start: inside the pull-up
+            return ok
+
+        us._wait_quiet = quiet
+        v = us.ping()
+        assert v is not FAR or us.discards["slow_trigger"] == 0
+        if us.discards["slow_trigger"]:
+            assert v is None and us.lost_echo_cm == 0.0
+
+
+def test_a_gap_while_waiting_for_quiet_makes_the_ping_unwatched():
+    b, us, line, clock = make()
+    line.queue(("multi", [(D, 0.0003), (D + 0.0003 + 0.0015, echo_for_cm(80))]))
+    us.ping()                                            # the second pulse comes while the next ping waits for quiet
+    line.drop_next = 1                                   # ... and one of its edges is lost
+    line.queue((D, echo_for_cm(40)))
+    for _ in range(10):
+        v = us.ping()
+        if us.triggered:
+            break
+        clock.advance(0.01)
+    assert v is None and us.lost_echo_cm == 0.0 and us.discards["unwatched"] == 1
+    assert us.diag["quiet_gap"] + us.diag["follow_gap"] == 1
+
+
+def test_an_unknown_timing_mode_is_rejected(monkeypatch):
+    import importlib
+    with pytest.raises(ValueError):
+        ue.select_ultrasonic("polling", FakeClock(), lambda: "poll")
+    monkeypatch.setenv("CAR_SCRATCH_US_TIMING", "polling")
+    from picar_server import __main__ as m
+    m = importlib.reload(m)
+    monkeypatch.setattr(m.web, "run_app", lambda app, **kw: None)
+    with pytest.raises(SystemExit):
+        m.main(["--hardware", "none"])
 
 
 # -- errors and lifecycle ------------------------------------------------------------------------------------

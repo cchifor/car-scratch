@@ -37,6 +37,8 @@ def main(argv=None) -> None:
                         "(default: $CAR_SCRATCH_US_TIMING, else poll)")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
+    if a.us_timing not in ("auto", "edges", "poll"):           # a default from the environment skips `choices`
+        p.error(f"CAR_SCRATCH_US_TIMING={a.us_timing!r}: expected auto, edges or poll")
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = Settings(port=a.port, hardware=a.hardware, us_timing=a.us_timing, www=a.www, examples=a.examples, source=a.source,

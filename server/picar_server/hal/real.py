@@ -69,7 +69,7 @@ class _HardwareBase:
 
         if us_timing == "poll":
             us = make_poll()
-        else:
+        else:                                          # (select_ultrasonic rejects an unknown mode)
             from .ultrasonic_edges import open_edge_ultrasonic, select_ultrasonic   # Linux-only path
             us = select_ultrasonic(us_timing, self.clock, make_poll, stop=self._stop_evt,
                                    open_edges=open_edges or open_edge_ultrasonic)

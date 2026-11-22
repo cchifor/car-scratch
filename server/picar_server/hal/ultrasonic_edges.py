@@ -37,6 +37,7 @@ RISE_MAX_S = 0.0005                         # ... and no later (measured <= 402 
                                             # first rise was merged away by a delayed IRQ thread
 FALL_LAT_S = 0.0001
 TRIGGER_MAX_S = 0.00014
+PULLUP_MAX_S = 0.0005                       # the whole pull-up (call + hold) too: a stall there could hide a pulse
 QUIET_S = 0.002                             # no edge for this long (and the line low) before a trigger
 QUIET_MAX_S = 0.05                          # still not quiet after this: treat the line as busy
 LINGER_S = 0.0003                           # after the first fall, wait this long for a second pulse (>= 1 ms in
@@ -182,8 +183,8 @@ class EdgeUltrasonic(Ultrasonic):
             if self.discards["io_error"] == 1:
                 log.warning("ultrasonic: GPIO error: %s", e)
             r = None
-        if not self._broke:
-            self.floor_breaks = 0
+        if self.triggered and not self._broke:
+            self.floor_breaks = 0                      # only a triggered ping that passed every check resets it
         return r
 
     def _ping(self):
@@ -202,6 +203,8 @@ class EdgeUltrasonic(Ultrasonic):
                 self.diag["found_high"] += 1
             return BUSY
         unwatched, self._unwatched_next = self._unwatched_next, False
+        if self._gap:                                  # events were lost while waiting for quiet: don't trust it
+            unwatched, self.diag["quiet_gap"] = True, self.diag["quiet_gap"] + 1
         self._gap = False
         self.triggered = True
         self._pre, self._ours = [], 0
@@ -228,8 +231,10 @@ class EdgeUltrasonic(Ultrasonic):
                 deadline = max(deadline, evs[0].t + ECHO_STUCK_S)
             if len(evs) == before:
                 break
-        if not has_fall(evs) and ln.get() == 0:
+        line_high = ln.get() == 1
+        if not has_fall(evs) and not line_high:        # low, but no fall delivered: let the kernel queue it
             self._collect(evs, c.monotonic() + FALL_SETTLE_S, t_ours, has_fall)
+            line_high = ln.get() == 1
         # 2. linger for a second pulse after the first fall, and follow it to its end (the double pulse)
         if has_fall(evs):
             f1 = next(e for e in evs if not e.rising)
@@ -237,11 +242,12 @@ class EdgeUltrasonic(Ultrasonic):
             if evs[-1] is not f1 and evs[-1].rising:
                 r2 = evs[-1]
                 self._collect(evs, r2.t + ECHO_STUCK_S, t_ours, lambda es: not es[-1].rising)
-        line_high = ln.get() == 1
+            line_high = ln.get() == 1
         self._sort(self._take(), evs, t_ours)          # anything queued by the time of the level read
-        return self._classify(evs, unwatched, t_fall_lo, t_fall_hi, line_high)
+        return self._classify(evs, unwatched, t_up_lo, t_fall_lo, t_fall_hi, line_high)
 
-    def _classify(self, evs: list, unwatched: bool, t_fall_lo: float, t_fall_hi: float, line_high: bool):
+    def _classify(self, evs: list, unwatched: bool, t_up_lo: float, t_fall_lo: float, t_fall_hi: float,
+                  line_high: bool):
         c = self.clock
         self.answered = bool(evs)
 
@@ -249,6 +255,7 @@ class EdgeUltrasonic(Ultrasonic):
             self.discards[why] += 1
             self.lost_echo_cm = 0.0                    # an echo may have come and gone unseen: at any distance
             self._record(why, evs, line_high)
+            self._last_edge_t = c.monotonic()          # the next trigger waits for a quiet line from here
             if line_high:                              # the module is still answering: follow it
                 self._busy_since, self._cycle_fell = c.monotonic(), False
                 return BUSY
@@ -256,7 +263,7 @@ class EdgeUltrasonic(Ultrasonic):
 
         if unwatched:
             return discard("unwatched")
-        if t_fall_hi - t_fall_lo > TRIGGER_MAX_S:
+        if t_fall_hi - t_fall_lo > TRIGGER_MAX_S or t_fall_lo - t_up_lo > PULLUP_MAX_S:
             self._count_break("slow_trigger")
             return discard("slow_trigger")             # a module edge could hide among our own trigger's
         if self._gap:
@@ -328,6 +335,7 @@ class EdgeUltrasonic(Ultrasonic):
         self.discards[why] += 1
         self.lost_echo_cm = 0.0
         self._record(why, evs, line_high)
+        self._last_edge_t = self.clock.monotonic()
         if line_high:
             self._busy_since, self._cycle_fell = self.clock.monotonic(), False
             return BUSY
@@ -380,6 +388,7 @@ class EdgeUltrasonic(Ultrasonic):
         if self._gap:
             self.diag["follow_gap"] += 1
             self._unwatched_next = True
+            self._gap = False                          # recorded: the next ping is unwatched
         self._busy_since = None
         return _FREE
 
@@ -425,10 +434,16 @@ def open_edge_ultrasonic(clock, stop: Optional[threading.Event] = None, name: st
         raise
 
 
+MODES = ("poll", "edges", "auto")
+
+
 def select_ultrasonic(mode: str, clock, make_poll: Callable[[], Ultrasonic], stop: Optional[threading.Event] = None,
                       open_edges=open_edge_ultrasonic) -> Ultrasonic:
-    """`poll`, `edges` (never falls back) or `auto` (edges; polling when the kernel lacks the interface or the
-    module does not answer a pull-up trigger)."""
+    """`poll`, `edges` (no fallback at start) or `auto` (edges; polling when the kernel lacks the interface or the
+    module does not answer a pull-up trigger). At run time either edge mode hands over to polling when the module
+    keeps failing the checks."""
+    if mode not in MODES:
+        raise ValueError(f"unknown ultrasonic timing {mode!r} (expected one of {', '.join(MODES)})")
     if mode == "poll":
         return make_poll()
     try:
