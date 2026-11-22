@@ -67,7 +67,9 @@ The spike scripts live in `server/tools/diag/` (`edgespike.py`, `irqlat.py` and 
   rise.
 - **So §2 switched to the pull-up trigger:** edges stay armed and the line is never driven. The rules for the
   arming window dropped out; D9 has the rules as built.
-- **The measured rise floor** is 289 µs from before the trigger call, so `RISE_MIN_S` is 0.25 ms.
+- **The module times its answer from the trigger's rise** (its echo rises 440–531 µs after the pull-up starts), so
+  the pull-down follows at once. The rise must come 0.40–0.60 ms after the pull-up, and the whole trigger must take
+  under 0.28 ms.
 
 ### 1. `hal/gpio_cdev.py`: a uAPI v2 wrapper, no new package
 

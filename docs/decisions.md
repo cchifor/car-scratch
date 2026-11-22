@@ -316,7 +316,12 @@ The owner asked for the kernel-timestamp version (plan item M8, plan in
     D5, D7 and D8 are unchanged.
 - **Trigger.** The line is never driven.
   - It stays an input with both edges detected, held low by the internal pull-down.
-  - A ping switches to the pull-up for about 10 µs and back, and that fall triggers the module.
+  - A ping switches to the pull-up and straight back. The module times its answer from that rise: its echo rises
+    440–531 µs after the pull-up starts, however long the pull-up is held. A pull-up held 400 µs or more hides
+    that rise under itself, so the pull-down follows at once.
+  - Both calls keep the interpreter lock. `fcntl.ioctl` releases it, so another server thread could run between
+    them for up to the 0.5 ms switch interval, which hid the rise in 1–2.5 % of pings. The trigger therefore uses
+    `ioctl` through `ctypes.PyDLL` in straight-line calls. On the car it takes 35 µs median, 97 µs maximum.
   - Edge detection is therefore on all the time. No echo can come and go between a trigger and re-arming, and
     nothing can fight the module's output.
 - **Start-up check.** The server checks that the module answers pull-up triggers (at least 4 of 5).
@@ -330,9 +335,12 @@ The owner asked for the kernel-timestamp version (plan item M8, plan in
 
 - **Pull-up trigger:**
   - The module answered 1000 of 1000 triggers on an idle CPU, and 498 of 500 under a 3-core load.
-  - It rises 289–402 µs after the trigger, timed from before the pull-down call.
-  - The real sensor answered 2247 of 2247 pings idle, and 2239 of 2244 under load.
-  - The trigger call took 16–62 µs; one preempted call took 574 µs.
+  - It rises 440–531 µs after the pull-up starts, with no hold, with a 200 µs hold, idle and under load (1500
+    pings).
+  - With a 400 µs or 700 µs hold, the rise was hidden in 600 of 600.
+  - The first server run held the pull-up with a 10 µs sleep, which the GIL stretched to 0.5–1.1 ms. 2–4 % of pings
+    were discarded, mostly as `edges` and `early_rise`: the rise was hidden under our own pull-up. That is how
+    the rise timing was found.
 - **The rejected alternative: a driven trigger, then re-arming edge detection.** On an idle CPU (clocked down),
   re-arming outran the module's rise in 54 % of pings, and the arming window reached 459 µs.
 - **Kernel timestamps** (pull toggles on an unused pin):
@@ -342,9 +350,14 @@ The owner asked for the kernel-timestamp version (plan item M8, plan in
 
 **The rules** (`ultrasonic_edges.py`):
 
-- **Our own trigger's edges.** Events stamped up to the trigger call's end plus 0.1 ms are ours and are ignored.
-  The module rises no earlier than 0.25 ms after the call starts, and a trigger call slower than 0.14 ms makes the
-  ping uncertain. So the two never mix.
+- **Our own trigger's edges.** Events stamped up to the trigger's end plus 0.1 ms are ours and are ignored.
+  - The module's first rise must come 0.40–0.60 ms after the pull-up starts. Earlier means the module answered
+    something else. Later means a delayed interrupt thread merged the true first rise away, since a hidden first
+    pulse plus its dip lasts at least ~0.26 ms.
+  - A whole trigger longer than 0.28 ms makes the ping uncertain.
+  - So our own edges and the module's never mix (0.40 > 0.28 + 0.10).
+  - Edges stamped after the quiet check and before our trigger make the ping uncertain, and so do more than two
+    edges inside our trigger window.
 - **Never farther.** A fall-latency allowance of 0.1 ms (1.7 cm) is subtracted from every width. A reading is
   never farther than the first pulse, as long as the kernel's interrupt entry latency stays under 0.1 ms
   (measured ≤ 75 µs). That condition can't be checked from user space, which is one reason the default stays
@@ -352,6 +365,8 @@ The owner asked for the kernel-timestamp version (plan item M8, plan in
 - **"Nothing there"** (FAR, or a cleanly started long cycle) is reported only from a first pulse whose rise and fall
   were both seen. Every uncertain ping records a possible echo at 0 cm. The uncertain cases:
   - a slow trigger;
+  - activity just before or during our trigger;
+  - a first rise outside 0.40–0.60 ms;
   - events out of order;
   - a sequence gap (counted from the request's start);
   - a lost fall;
@@ -361,11 +376,16 @@ The owner asked for the kernel-timestamp version (plan item M8, plan in
   is never taken for this ping's echo.
 - **The double pulse** (D8). The first pulse is the reading. A second one is followed to its end and counted as
   `multi`.
-- **Fallback.** Five pings in a row that break a measured limit, or five triggers in a row with no answer, switch
-  the server to polling. The switch happens once the line is free, and the batch's evidence is kept.
+- **Fallback.** Five triggered pings in a row that fail a check, or five triggers in a row with no answer, switch
+  the server to polling. The failing checks are the rise window, a slow trigger, and extra edges in our window.
+  - The switch waits for a line verified low and quiet, and the batch's evidence is kept.
+  - It happens in either edge mode at run time. At start, only `auto` falls back.
 
-**Review.** The plan had one round, and the implementation one round with two independent reviewers. No
-reading farther than the first pulse was found (120,000 fuzzed pings). The findings were fixed with tests:
+**Review.** The plan had one round, and the implementation two rounds with two independent reviewers. No
+reading farther than the ping's own first pulse was found: 120,000 fuzzed pings in round 1, 36,000 sequences in
+round 2. The findings were fixed with tests, each checked to fail on the code before its fix.
+
+Round 1:
 
 - the driven trigger could fight the module, so the pull-up trigger replaced it;
 - a fall queued at the deadline;
@@ -376,6 +396,16 @@ reading farther than the first pulse was found (120,000 fuzzed pings). The findi
 - a leaked line on a failed start;
 - an unbounded socket close on shutdown;
 - a fake that did not model the kernel's merges.
+
+Round 2:
+
+- a pause after the quiet check could hide a noise-triggered answer (pre-trigger activity now discards);
+- a first pulse merged into a later rise by a delayed interrupt thread could read FAR (the rise window now catches
+  it);
+- an I/O error mid-cycle could hand the pin to polling while the module was high;
+- slow triggers and untriggered pings did not count correctly toward the fallback;
+- the pull-up hold was unbounded;
+- unknown `CAR_SCRATCH_US_TIMING` values were accepted.
 
 **Also fixed (pre-existing, found by the plan reviews).**
 
@@ -390,13 +420,24 @@ reading farther than the first pulse was found (120,000 fuzzed pings). The findi
   - An odd number merged shows as an out-of-order sequence and is discarded.
   - An even number merged is invisible: a dip of a few tens of µs inside an echo, or a stray pulse of that length.
   - This replaces the polling blind spot, which covered dips under ~70 µs normally and up to 1 ms under a stall.
-- **The rise floor** describes this module. A module that answers faster than 0.25 ms breaks it, which shows as
-  `early_rise` and falls back to polling.
+- **The rise window** (0.40–0.60 ms) describes this module. A module that answers outside it shows as
+  `early_rise` or `late_rise`, and falls back to polling.
+- **A late pulse.** A module pulse more than 2 ms after its answer ended looks like an answer to the next trigger.
+  The measured double pulses have dips of 0.06–0.2 ms.
+- **Noise.** All measurements so far were with the motors off. Unprompted answers show as `found_high`,
+  `pre_trigger` and `tail_edges`; these counters are pass criteria of the drive test.
 - **From D7 and D8:** something moving toward the car is seen only at the next reading.
 
-**Still to do before edges become the default:**
+**Stationary validation, done (2026-11-22, `fc51ef3`, edges on through a unit drop-in, 10 minutes under the real
+server):**
 
-1. A 10-minute stationary run under the server.
-2. A drive test with the owner. Each motion step is announced first.
+- About 15,000 triggers; 1 discarded (`no_rise`), none in the last 9 minutes.
+- Trigger time: median 125 µs, maximum 251 µs (limit 280).
+- No `sensor_fault`; server CPU 10 %.
+- The two runs before it (the 10 µs sleep, then the GIL release) discarded 2–4 % and 1–2.5 %: that is how the rise
+  timing and the interpreter-lock issue were found.
+
+**Still to do before edges become the default:** a drive test with the owner, each motion step announced first.
+The noise counters (`found_high`, `pre_trigger`, `tail_edges`) are pass criteria, with the motors running.
 
 Then switch the default and record the results here.
