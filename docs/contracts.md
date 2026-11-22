@@ -21,7 +21,7 @@ Every controller (the shared car, and each private sim) applies these rules.
 | Mode/control transitions | Switching mode, losing control, `world` change and sim `reset_pose` stop motion first (and latch hold for the car controller). |
 | Watchdog | Controller silent (no **accepted** JSON frame — rate-limited or rejected frames do not count) for > `wd_ms` (750 ms) → stop and latch **hold** (whether or not the motors run), `event watchdog_stop` if they were running, `done{watchdog}` for a timed move. |
 | Pause | `cmd pause` (tab hidden) → stop + latch hold. |
-| Hold | Motion refused (`err hold`) until `resume`. Set by watchdog, pause, and controller disconnect. |
+| Hold | Motion refused (`err hold`) until `resume`. Set by watchdog, pause, controller disconnect, and server shutdown (reason `shutdown`). |
 | Disconnect | Controller socket closes → stop immediately, latch hold, 30 s lease for the `client_id`. |
 | E-stop | `estop` from anyone (any mode) → stop, latch on the shared car (+ own sim). Motion refused (`err estop`) until the controller sends `estop_reset`. Also `POST /api/estop`. |
 | Reverse | Backward speed clamped to 40 (also via `set_speed`). The **cumulative** backward-motion time of an episode is capped at 5000 ms, unaffected by replacement commands; it resets only after ≥ 1 s stopped or after forward motion. At the cap: stop, `event reverse_timeout` (`done{reverse_timeout}` for a move), then backward commands get `err reverse_timeout` until the reset condition. |

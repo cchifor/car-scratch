@@ -59,6 +59,7 @@ class Hub:
         self._tel_task = asyncio.get_running_loop().create_task(self._tel_loop())
 
     async def stop(self) -> None:
+        """Idempotent: shutdown and cleanup both call it."""
         self.power.stop()
         if self._tel_task:
             self._tel_task.cancel()

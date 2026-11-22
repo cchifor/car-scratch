@@ -312,7 +312,10 @@ bodies are buffered at once (a semaphore), and all file work runs in the default
   `app._sd_loop` sends `READY=1` 0.1 s after startup and then `WATCHDOG=1` every 0.5 s.
 
 **Configuration.** The user unit: `Type=notify`, `WatchdogSec=3`, `Restart=always`, `RestartSec=2`,
-`TimeoutStopSec=2`, `ExecStartPre=-` and `ExecStopPost=-/usr/bin/python3 -m picar_server.safe_stop`. The system
+`TimeoutStopSec=2`, `ExecStartPre=-` and `ExecStopPost=-/usr/bin/python3 -m picar_server.safe_stop`. On SIGTERM the
+app's `on_shutdown` stops the car (hold `shutdown`) and closes every WebSocket (1001) first; aiohttp then waits at most
+0.5 s (`shutdown_timeout`) for open requests, so cleanup (backend close) finishes inside the 2 s. Before this, one open
+socket kept the process alive 7.5 s and systemd killed it (2026-11-22). The system
 unit `car-safe-stop.service` runs a root-owned copy (`/usr/local/lib/car-scratch/safe_stop.py`) through
 `safe-stop-wait.sh`, which waits up to about 10 s for `/dev/i2c-1`.
 

@@ -14,6 +14,9 @@ def _split(values: list[str]) -> list[str]:
     return [v.strip() for item in values for v in item.split(",") if v.strip()]
 
 
+SHUTDOWN_TIMEOUT_S = 0.5
+
+
 def main(argv=None) -> None:
     d = Settings()
     p = argparse.ArgumentParser(prog="picar_server")
@@ -34,7 +37,10 @@ def main(argv=None) -> None:
     settings = Settings(port=a.port, hardware=a.hardware, www=a.www, examples=a.examples, source=a.source,
                         data=a.data, config=a.config, allow_hosts=_split(a.allow_host),
                         allow_origins=_split(a.allow_origin))
-    web.run_app(create_app(settings), host=a.host, port=a.port, access_log=None, print=None)
+    # shutdown_timeout: how long aiohttp waits for open requests after on_shutdown closed the sockets; cleanup
+    # (backend close) must still finish inside systemd's TimeoutStopSec=2.
+    web.run_app(create_app(settings), host=a.host, port=a.port, access_log=None, print=None,
+                shutdown_timeout=SHUTDOWN_TIMEOUT_S)
 
 
 if __name__ == "__main__":
