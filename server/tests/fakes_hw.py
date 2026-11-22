@@ -207,3 +207,151 @@ class FakeGPIO:
 
     def writes_to(self, pin):
         return [v for p, v in self.outputs if p == pin]
+
+
+class FakeEdgeLine:
+    """The kernel side of `gpio_cdev.EdgeLine` for one ultrasonic line, on a FakeClock.
+
+    Script entries are FakeGPIO's, timed from the trigger's falling edge (`set(0)` in output mode): (delay, width),
+    multi(...), long_cycle(...) or None. While armed, every edge of the module's output is recorded with its exact
+    time, like the kernel's hard-IRQ timestamp, and becomes readable once the clock passes it. Knobs:
+      arm_latency  seconds arm() takes (the clock advances by it); a list is used one per arm()
+      arm_at       fraction of arm() after which edges are recorded (1.0 = only when it returns)
+      irq_thread   the kernel's IRQ-thread latency: an edge's kind is the level read this long after it, and an
+                   edge inside a previous edge's thread window is timestamped when the window ends (oneshot IRQ)
+      drop_next    the next N recorded events are lost (a line_seqno gap)
+    """
+    RISE_DELAY = 0.0004                                 # measured 383-417 us after the trigger
+
+    def __init__(self, clock: FakeClock):
+        self.clock = clock
+        self.script: deque = deque()
+        self.default = None
+        self.arm_latency = 0.00013
+        self.arm_at = 1.0
+        self.irq_thread = 0.0
+        self.drop_next = 0
+        self.mode = "input"                             # input | armed | output
+        self.out_value = 0
+        self.pings = self.contention = self.arms = 0
+        self.closed = False
+        self._pulses: list[tuple[float, float]] = []    # absolute (rise, fall) of the module's output
+        self._busy_until = 0.0
+        self._armed_from: float | None = None
+        self._emitted = 0.0                             # edges at or before this time are already recorded
+        self._queue: list = []                          # recorded, not yet read: (t, rising, seqno)
+        self._seq = 0
+        self._last_irq = -1.0
+
+    def queue(self, *entries):
+        self.script.extend(entries)
+
+    # -- the module ---------------------------------------------------------------------------------------
+    def _module_high(self, t: float) -> bool:
+        return any(r <= t < f for r, f in self._pulses)
+
+    def _busy(self) -> bool:
+        return self.clock.now < self._busy_until
+
+    def _trigger(self) -> None:
+        self.pings += 1
+        if self._busy():
+            return                                      # mid-cycle: the module ignores the trigger
+        entry = self.script.popleft() if self.script else self.default
+        t0 = self.clock.now
+        if entry is None:
+            return
+        if entry[0] == "cycle":
+            _, delay, width = entry
+            self._busy_until = t0 + delay + width
+            pulses = [(delay, width)]
+        elif entry[0] == "multi":
+            pulses = entry[1]
+        else:
+            pulses = [entry]
+        self._pulses = [(t0 + d, t0 + d + w) for d, w in pulses]
+
+    # -- the kernel ---------------------------------------------------------------------------------------
+    def _record(self) -> None:
+        if self.mode != "armed" or self._armed_from is None:
+            return
+        now = self.clock.now
+        edges = sorted([(r, True) for r, _ in self._pulses] + [(f, False) for _, f in self._pulses])
+        for t, _kind in edges:
+            if t <= self._emitted or t < self._armed_from or t > now:
+                continue
+            self._emitted = t
+            ts = t
+            if self.irq_thread and t < self._last_irq + self.irq_thread:
+                ts = self._last_irq + self.irq_thread    # masked until the previous edge's thread finished
+            if ts > now:
+                self._emitted = t - 1e-12                # not handled yet; look again later
+                break
+            self._last_irq = ts
+            rising = self._module_high(ts + self.irq_thread)
+            self._seq += 1
+            if self.drop_next:
+                self.drop_next -= 1
+                continue
+            self._queue.append((ts, rising, self._seq))
+
+    def _next_edge_after(self, t: float):
+        times = [x for r, f in self._pulses for x in (r, f) if x > t]
+        return min(times) if times else None
+
+    # -- EdgeLine API -------------------------------------------------------------------------------------
+    def output_low(self) -> None:
+        if self._module_high(self.clock.now):
+            self.contention += 1
+        self.mode, self.out_value, self._armed_from = "output", 0, None
+        self.clock.advance(0.00004)
+
+    def set(self, value: int) -> None:
+        assert self.mode == "output", "set() on an input line"
+        if self.out_value and not value:
+            self._trigger()
+        self.out_value = value
+
+    def arm(self) -> None:
+        lat = self.arm_latency.pop(0) if isinstance(self.arm_latency, list) else self.arm_latency
+        self.arms += 1
+        start = self.clock.now
+        self.mode = "armed"
+        self._armed_from = start + lat * self.arm_at
+        self._emitted = max(self._emitted, self._armed_from - 1e-12)
+        self.clock.advance(lat)
+
+    def input(self) -> None:
+        self.mode, self._armed_from = "input", None
+
+    def get(self) -> int:
+        if self.mode == "output":
+            return self.out_value
+        return 1 if self._module_high(self.clock.now) else 0
+
+    def wait(self, timeout_s: float) -> bool:
+        self._record()
+        if self._queue:
+            return True
+        end = self.clock.now + max(0.0, timeout_s)
+        nxt = self._next_edge_after(self._emitted) if self.mode == "armed" else None
+        if nxt is not None and self.irq_thread:
+            nxt = max(nxt, self._last_irq + self.irq_thread)
+        if nxt is not None and nxt <= end:
+            self.clock.now = max(self.clock.now, nxt)
+            self._record()
+            return bool(self._queue) or self.wait(end - self.clock.now)
+        self.clock.now = max(self.clock.now, end)
+        self._record()
+        return bool(self._queue)
+
+    def events(self) -> list:
+        from picar_server.hal.gpio_cdev import Edge
+        self._record()
+        out = [Edge(rising, t, seq) for t, rising, seq in self._queue]
+        self._queue.clear()
+        return out
+
+    def close(self) -> None:
+        self.input()
+        self.closed = True
