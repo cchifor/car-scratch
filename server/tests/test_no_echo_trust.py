@@ -7,7 +7,11 @@ from picar_server.hal.base import DIST_FAR, DIST_NONE, DIST_OK, Sample
 from picar_server.hal.real import RealBackend
 
 from conftest import FakeBackend, Rig
-from fakes_hw import FakeBus, FakeClock, FakeGPIO
+import pytest
+
+from picar_server.hal.ultrasonic_edges import EdgeUltrasonic
+
+from fakes_hw import FakeBus, FakeClock, FakeEdgeLine, FakeGPIO, echo_for_cm
 
 DETECT_S = 0.045        # a long cycle is known 40 ms after its ping, and the sample reaches the controller a bit later
 
@@ -184,15 +188,81 @@ def test_samples_without_clear_t_behave_as_before():
 
 # ---- the real sensor code feeding the controller, on one fake clock ------------------------------------------------
 
+class EdgeScript:
+    """FakeGPIO's script API on a FakeEdgeLine. The polling fake times pulses from when the poll starts watching
+    (~0.1 ms after the trigger on the car); the edge fake from the trigger's fall: add that 0.1 ms."""
+    SHIFT = 0.0001
+
+    def __init__(self, line):
+        self.line = line
+
+    def _shift(self, e):
+        if e is None:
+            return None
+        if e[0] == "cycle":
+            return ("cycle", e[1] + self.SHIFT, e[2])
+        if e[0] == "multi":
+            return ("multi", [(d + self.SHIFT, w) for d, w in e[1]])
+        return (e[0] + self.SHIFT, e[1])
+
+    def queue(self, *entries):
+        self.line.queue(*[self._shift(e) for e in entries])
+
+    @property
+    def default(self):
+        return self.line.default
+
+    @default.setter
+    def default(self, e):
+        self.line.default = self._shift(e)
+
+    def long_cycle(self, width: float = 0.4015, delay: float = 0.0003):
+        return ("cycle", delay, width)
+
+    def multi(self, *pulses):
+        return ("multi", list(pulses))
+
+    def echo_cm(self, cm: float, delay: float = 0.0005):
+        return (delay, echo_for_cm(cm))
+
+    def _busy(self) -> bool:
+        return self.line._busy()
+
+    @property
+    def _busy_from(self):
+        return self.line._busy_from
+
+    @property
+    def contention(self):
+        return self.line.contention
+
+
+@pytest.fixture(params=["poll", "edges"])
+def timing(request):
+    """Run an integrated test with each ultrasonic implementation."""
+    Car.TIMING = request.param
+    yield request.param
+    Car.TIMING = "poll"
+
+
 class Car:
-    """RealBackend's sensor hub (fake GPIO / bus) delivering samples to a Controller, at the sensor thread's cadence.
-    The I2C reads take `i2c_s` per sample (measured on the car: the busy cycles start 409-413 ms apart)."""
+    """RealBackend's sensor hub (fake GPIO / bus, or the fake kernel edge line) delivering samples to a Controller,
+    at the sensor thread's cadence. The I2C reads take `i2c_s` per sample (measured on the car: the busy cycles start
+    409-413 ms apart)."""
+    TIMING = "poll"
 
     def __init__(self, i2c_s=0.008, cal=None):
         self.hw = FakeClock()
-        self.bus, self.gpio = FakeBus(), FakeGPIO(self.hw)
+        self.bus = FakeBus()
         self.bus.line_bytes = None
-        self.b = RealBackend({}, bus=self.bus, gpio=self.gpio, clock=self.hw)
+        if self.TIMING == "edges":
+            line = FakeEdgeLine(self.hw)
+            self.gpio = EdgeScript(line)
+            self.b = RealBackend({}, bus=self.bus, gpio=FakeGPIO(self.hw), clock=self.hw, us_timing="edges",
+                                 open_edges=lambda clk, stop=None: EdgeUltrasonic(line, clk, stop=stop))
+        else:
+            self.gpio = FakeGPIO(self.hw)
+            self.b = RealBackend({}, bus=self.bus, gpio=self.gpio, clock=self.hw)
         self.i2c_s = i2c_s
         self.backend = FakeBackend()
         self.ctl = Controller(self.backend, config.merge(cal), shared=True, clock=lambda: self.hw.now,
@@ -207,6 +277,7 @@ class Car:
         self.ctl.touch()
         self.ctl._on_sample(s)
         self.ctl.tick()
+        self.decided = self.hw.now                       # when this step's stop/drive decision was made
         self.hw.advance(max(0.0, 0.04 - (self.hw.now - t0)))
 
     def drive(self, speed=50):
@@ -217,7 +288,7 @@ class Car:
         return self.backend.duty != (0, 0)
 
 
-def test_integrated_open_space_long_cycles_keep_driving():
+def test_integrated_open_space_long_cycles_keep_driving(timing):
     car = Car()
     car.gpio.default = (0.0003, 0.027)                  # far
     for _ in range(5):
@@ -230,7 +301,7 @@ def test_integrated_open_space_long_cycles_keep_driving():
         assert car.driving(), car.hw.now - t0
 
 
-def test_integrated_stuck_line_after_one_cycle_stops_within_the_window():
+def test_integrated_stuck_line_after_one_cycle_stops_within_the_window(timing):
     car = Car()
     car.gpio.default = (0.0003, 0.027)
     for _ in range(5):
@@ -247,7 +318,7 @@ def test_integrated_stuck_line_after_one_cycle_stops_within_the_window():
     assert stopped_after <= safety.NO_ECHO_TRUST_S + 0.05, stopped_after
 
 
-def test_integrated_a_stall_anywhere_never_stretches_the_window():
+def test_integrated_a_stall_anywhere_never_stretches_the_window(timing):
     # Fourth review: a 200 ms stall at the rising edge kept forward motion on trust 608 ms after the ping.
     for at in range(1, 60, 3):
         car = Car()
@@ -261,12 +332,16 @@ def test_integrated_a_stall_anywhere_never_stretches_the_window():
             car.step()
         rise = car.gpio._busy_from
         while car.driving():
+            # The invariant, at every decision: still driving only inside the window counted from the ping (which
+            # is before the rise). This harness runs the controller only between sensor reads, so a stall inside a
+            # read delays the decision itself; on the car the loop tick checks freshness every 50 ms regardless.
+            assert car.decided - rise <= safety.NO_ECHO_TRUST_S + 1e-6, (at, car.decided - rise)
             car.step()
             assert car.hw.now - rise < 5.0
-        assert car.hw.now - rise <= safety.NO_ECHO_TRUST_S + 0.05, (at, car.hw.now - rise)
+        assert car.ctl._last_clear_t is not None and car.ctl._last_clear_t <= rise, (at, car.ctl._last_clear_t, rise)
 
 
-def test_integrated_a_hidden_echo_before_a_long_cycle_stops_the_car():
+def test_integrated_a_hidden_echo_before_a_long_cycle_stops_the_car(timing):
     # Seventh review: an earlier "nothing there" stayed trusted after a stalled ping that hid a 34 cm echo and then
     # went busy; at the car's calibration that echo is inside the full-speed margin.
     for at in range(1, 140, 3):                          # every stall position across the hidden echo's sample
@@ -289,7 +364,7 @@ def test_integrated_a_hidden_echo_before_a_long_cycle_stops_the_car():
         assert not car.driving() and car.hw.now - t_hidden <= 0.3, (at, car.hw.now - t_hidden)
 
 
-def test_integrated_discarded_near_echo_blocks_the_trust():
+def test_integrated_discarded_near_echo_blocks_the_trust(timing):
     car = Car()
     car.gpio.default = (0.0003, 0.027)
     for _ in range(5):

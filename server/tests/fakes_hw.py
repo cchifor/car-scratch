@@ -240,7 +240,7 @@ class FakeEdgeLine:
         self.pings = self.contention = self.arms = 0
         self.closed = False
         self._pulses: list[tuple[float, float]] = []    # absolute (rise, fall) of the module's output
-        self._busy_until = 0.0
+        self._busy_from = self._busy_until = 0.0
         self._armed_from: float | None = None
         self._emitted = 0.0                             # edges at or before this time are already recorded
         self._queue: list = []                          # recorded, not yet read: (t, rising, seqno)
@@ -267,6 +267,7 @@ class FakeEdgeLine:
             return
         if entry[0] == "cycle":
             _, delay, width = entry
+            self._busy_from = t0 + delay
             self._busy_until = t0 + delay + width
             pulses = [(delay, width)]
         elif entry[0] == "multi":
