@@ -126,7 +126,7 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
 | `ack` | `id`, `ok:true`, plus effective values where relevant (e.g. `speed`, `angle`, `config`) |
 | `done` | `id`, `result:"completed"\|"stopped"\|"superseded"\|"obstacle"\|"estop"\|"watchdog"\|"reverse_timeout"\|"hw_fault"` (only for `move`) |
 | `err` | `id?`, `code`, `msg` — codes: `not_controller`, `estop`, `hold`, `obstacle_blocked`, `sensor_fault`, `reverse_timeout`, `bad_request`, `rate_limited`, `hw_unavailable`, `hw_fault`, `sim_only`, `sim_busy` |
-| `event` | `kind`, extra fields — kinds: `obstacle_stop{cm}`, `estop{by}`, `estop_reset`, `watchdog_stop`, `sensor_fault{reason}`, `hold{reason}`, `resumed`, `reverse_timeout`, `drive_timeout`, `control_changed{controller_present}`, `sensor_fault{sensor}`, `sensor_ok{sensor}`, `hw_fault{msg}`, `power_low{low_events}`, `power_ok` (amendment 2026-11-21, car mode only: `power_low` on each false->true change of `power.low`, `power_ok` once `low` has stayed false for 5 s after a `power_low`) |
+| `event` | `kind`, extra fields — kinds: `obstacle_stop{cm}`, `estop{by}`, `estop_reset`, `watchdog_stop`, `hold{reason}`, `resumed`, `reverse_timeout`, `drive_timeout`, `control_changed{controller_present}`, `sensor_fault{sensor, reason?}` (ultrasonic `reason`: `no_answer` = the sensor did not answer 3 samples in a row, paired with a later `sensor_ok`; `no_reading` = forward motion stopped because no fresh enough distance arrived (decisions D7, D8); `no_samples` = the sensor thread delivered no sample for 0.5 s), `sensor_ok{sensor}`, `hw_fault{msg}`, `power_low{low_events}`, `power_ok` (amendment 2026-11-21, car mode only: `power_low` on each false->true change of `power.low`, `power_ok` once `low` has stayed false for 5 s after a `power_low`) |
 | `role` | `role:"controller"\|"viewer"`, `controller_present:bool` |
 | `world` | sim world description, see `docs/contracts.md` §4 |
 
@@ -151,8 +151,9 @@ not the controller (`not_controller`), or the car is unavailable (`hw_unavailabl
 - `drive.bumped` (simulator only: sim sessions, and the shared car under `--hardware sim`; absent on the real
   and dry-run car): `true` while the simulated car body is against a wall (the last physics step was blocked),
   `false` once it moves freely again or after `reset_pose` / a world change.
-- `dist.state`: `ok` | `far` (nothing in range; `cm` null) | `none` (this sample got no echo; `cm` null) |
-  `fault` (3 consecutive `none` samples; `cm` null). `cm` is measured from the sensor face.
+- `dist.state`: `ok` | `far` (nothing in range; `cm` null) | `none` (this sample got no echo, or the module is
+  in its long no-echo cycle; `cm` null) | `fault` (3 consecutive `none` samples that are not the module's long
+  cycle: no answer to the trigger, or a line stuck high; `cm` null). `cm` is measured from the sensor face.
 - `obstacle`: true when `dist.cm < safety.margin_cm`.
 - `line.on`: 5 booleans, sensor 1 = leftmost; `line.pos`: −2 (left) … +2 (right) or null when no sensor sees a line.
 - `light.bright`: 0..100, higher = brighter; `light.max`: `left|middle|right|none`.

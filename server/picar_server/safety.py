@@ -19,6 +19,11 @@ FRESH_S = 0.5          # no ultrasonic sample for longer than this while moving 
 UNBLOCK_MARGIN_CM = 5  # `blocked` clears at margin + this
 REACTION_S = 0.2       # sensing + reaction allowance folded into the margin
 SENSOR_STALE_S = 0.15  # last ok/far sample older than this while moving forward -> sensor fault
+NO_ECHO_TRUST_S = 0.48  # ... unless a "nothing there" reading (far, or a long cycle beginning) is at most this old (D7),
+                        # counted from its ping
+TRUST_NEAR_CM = 100.0   # no such trust after an echo closer than this (or than twice the full-speed margin) ...
+NEAR_ECHO_MEMORY_S = 1.0  # ... was heard within this long
+KNOWN_SLACK_S = 0.1     # D8: time to the next freshness check (a sample every 40 ms, a loop tick every 50 ms)
 CLEAR_S = 1.0          # blocked clears after this long of consecutive clear samples
 DRIVE_TIMEOUT_S = 5.0  # forward drive with the distance guard off
 REVERSE_RESET_S = 1.0  # stopped this long resets the cumulative reverse budget

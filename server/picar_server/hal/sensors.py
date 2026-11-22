@@ -5,6 +5,7 @@ bit-banged on a GPIO and needs no lock. Timing sources are injectable so tests s
 """
 from __future__ import annotations
 
+import collections
 import logging
 import statistics
 import time
@@ -20,7 +21,8 @@ PCF_ADDR = 0x48
 LINE_ADDR = 0x11
 ECHO_START_TIMEOUT_S = 0.030     # no rising edge within 30 ms: no answer
 ECHO_FAR_S = 0.012               # echo ending after 12 ms (and before 40 ms): nothing within ~2 m
-ECHO_STUCK_S = 0.040             # echo still high at 40 ms: stuck line, no answer (never "far")
+ECHO_STUCK_S = 0.040             # echo still high at 40 ms: the module's long cycle (BUSY) or a stuck line, never "far"
+BUSY_CYCLE_MAX_S = 0.6           # the long cycle holds the line high 401.5 ms (measured); longer than this = stuck line
 MAX_GAP_S = 0.001                # a busy-wait iteration gap above this (GIL / scheduler) discards the ping
 FAR = 999.0
 FAULT_AFTER = 3                  # consecutive "none" samples
@@ -33,6 +35,17 @@ LINE_ABSENT_AFTER = 3           # consecutive invalid samples (two bad frames ea
 DEFAULT_LIGHT_CHANNELS = (0, 1, 2)
 
 
+class _Busy:
+    def __repr__(self) -> str:
+        return "BUSY"
+
+
+# ping() / measure(): the module is in its long no-echo cycle. Measured on the car (2026-11-21): against a weak
+# reflector about one ping in 15 the module holds the line high for 401.5 ms instead of its usual 27 ms no-echo
+# timeout, and ignores triggers until that cycle ends. No reading, but not evidence of a fault.
+BUSY = _Busy()
+
+
 class SystemClock:
     monotonic = staticmethod(time.monotonic)
     sleep = staticmethod(time.sleep)
@@ -41,48 +54,126 @@ class SystemClock:
 class Ultrasonic:
     def __init__(self, gpio, clock, pin: int = US_PIN):
         self.gpio, self.clock, self.pin = gpio, clock, pin
+        self._busy_since: Optional[float] = None   # start of an echo still high at ECHO_STUCK_S (pin left as input)
+        self.busy_started = False                  # the last ping() began a long cycle cleanly (not: found it busy)
+        self.ping_start: Optional[float] = None    # the last ping()'s echo rise (its "nothing there" time)
+        self.lost_echo_cm: Optional[float] = None  # the last ping() was discarded but may have been an echo this close
+        self.discards: collections.Counter = collections.Counter()   # why pings gave no reading (logged per minute)
+        self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
+        self.echo_cm: Optional[float] = None       # measure(): closest echo heard
+        self.batch_t: Optional[float] = None       # measure(): when its pings began
 
-    def ping(self) -> Optional[float]:
-        """cm, FAR for an echo ending between 12 and 40 ms, None for no valid ping (no echo, stuck high, or a
-        busy-wait gap above 1 ms, which makes the timing untrustworthy)."""
+    def ping(self):
+        """cm; FAR for an echo ending between 12 and 40 ms; BUSY while the module is in its long no-echo cycle;
+        None for no valid ping (no echo, a line high for longer than any module cycle, or a busy-wait gap above
+        1 ms while the echo is high, which makes the timing untrustworthy)."""
         g, c, p = self.gpio, self.clock, self.pin
+        self.busy_started = False
+        self.ping_start = self.lost_echo_cm = None
+        if self._busy_since is not None:
+            # Never trigger while the module holds the line high: it ignores triggers until its cycle ends, and
+            # driving the pin low would fight the module's output. Report busy until the line drops; a line high
+            # for longer than any module cycle is stuck (None, which counts toward the fault).
+            if g.input(p) == 1:
+                if c.monotonic() - self._busy_since <= BUSY_CYCLE_MAX_S:
+                    return BUSY
+                self.discards["stuck"] += 1
+                return None
+            self._busy_since = None
         g.setup(p, g.OUT, initial=g.LOW)
         c.sleep(0.002)
+        # The "nothing there" time of this ping (D7) is taken before the trigger: a stall anywhere after this only
+        # makes it earlier than the real ping, never later.
+        self.ping_start = c.monotonic()
         g.output(p, 1)
         c.sleep(0.00001)
         g.output(p, 0)
         g.setup(p, g.IN)
+        # One rule for every stall (a gap over MAX_GAP_S between two timestamps, from the trigger on): a stall means
+        # the line was not watched, so an echo may have come and gone unseen (and the line risen again). A stalled
+        # ping never yields a distance or "nothing there"; it records a possible echo at its safe lower bound. The
+        # one exception: "far" is certain when the rise and the first 12 ms were watched without a stall.
         t0 = c.monotonic()
-        # A late-detected rising edge only shortens the echo (reads closer: the safe side), so gaps while
-        # waiting for it are tolerated. A late-detected falling edge lengthens it (reads farther: unsafe),
-        # so any gap while the echo is high discards the ping, and the end time is taken inside the loop.
-        while g.input(p) == 0:
-            if c.monotonic() - t0 > ECHO_START_TIMEOUT_S:
+        stalled = t0 - self.ping_start > MAX_GAP_S
+        prev = t0
+        while True:                            # wait for the rise
+            high = g.input(p) == 1
+            now = c.monotonic()
+            if now - prev > MAX_GAP_S:
+                stalled = True
+            prev = now
+            if high:
+                break
+            if now - t0 > ECHO_START_TIMEOUT_S:
+                if stalled:
+                    self.lost_echo_cm = 0.0    # not watched for a while: a whole echo may have come and gone
+                self.discards["unwatched" if stalled else "no_rise"] += 1
                 return None
-        start = prev = c.monotonic()
-        gap = False
+        rise_clean = not stalled               # the rise seen is the ping's first one
+        start = now                            # just after the read that saw the line high
+        clean_high: Optional[float] = None     # latest time the line is known high with no stall since the trigger
         while True:
             high = g.input(p) == 1
             now = c.monotonic()
-            gap = gap or now - prev > MAX_GAP_S
+            if now - prev > MAX_GAP_S:
+                stalled = True
+            seen_after = prev                  # this read happened after `prev` was taken (before `now`)
             prev = now
             if not high:
                 break
+            if not stalled:
+                clean_high = seen_after
             if now - start > ECHO_STUCK_S:
-                return None
-        dur = now - start
-        if gap:
+                self._busy_since = start       # the pin stays an input; the next ping checks the line first
+                if stalled:
+                    self._lost_echo(rise_clean, clean_high, start)
+                else:
+                    self.busy_started = True   # 40 ms without an echo, watched throughout: "nothing there"
+                return BUSY
+        if stalled:
+            if rise_clean and clean_high is not None and clean_high - start > ECHO_FAR_S:
+                return FAR                     # watched from the rise past 12 ms: no echo ended within range
+            self._lost_echo(rise_clean, clean_high, start)
+            self.discards["gap"] += 1
             return None
+        # The echo ended after the last read that saw it high (clean_high) and at or before this one: time it from
+        # clean_high, the lower bound, so a pause right at the fall can only make the reading closer, never farther.
+        dur = 0.0 if clean_high is None else max(0.0, clean_high - start)
         if dur > ECHO_FAR_S:
             return FAR
         return dur * 34300 / 2
 
-    def measure(self, n: int) -> Optional[float]:
-        """Median of n pings (needs 2 valid when n == 3); None = no valid ping."""
-        vals = [v for v in (self.ping() for _ in range(n)) if v is not None]
-        if len(vals) < (2 if n >= 3 else 1):
+    def _lost_echo(self, rise_clean: bool, clean_high: Optional[float], start: float) -> None:
+        """A stalled ping may have hidden an echo: at least this close (the first pulse lasted past clean_high), or
+        anywhere (0) when the rise itself was not watched."""
+        lo = max(0.0, clean_high - start) if rise_clean and clean_high is not None else 0.0
+        self.lost_echo_cm = min(lo, ECHO_FAR_S) * 34300 / 2
+
+    def measure(self, n: int):
+        """Median of n pings (needs 2 valid when n == 3); BUSY when the module went into its long cycle before
+        enough valid pings (later pings would only see it busy); None = no valid ping. With two valid pings the
+        lower one counts (median_low): averaging FAR (999) with a real 10 cm echo would report 505 cm."""
+        need = 2 if n >= 3 else 1
+        vals: list[float] = []
+        self.clear_t = self.echo_cm = None
+        self.batch_t = self.clock.monotonic()          # no echo heard in this measurement is older than this
+        for _ in range(n):
+            v = self.ping()
+            if self.lost_echo_cm is not None:
+                self.echo_cm = self.lost_echo_cm if self.echo_cm is None else min(self.echo_cm, self.lost_echo_cm)
+            if v is BUSY:
+                if self.busy_started:                      # nothing heard for 40 ms: "nothing there" at the ping
+                    self.clear_t = self.ping_start
+                return statistics.median_low(vals) if len(vals) >= need else BUSY
+            if v is not None:
+                if v >= FAR:
+                    self.clear_t = self.ping_start
+                else:
+                    self.echo_cm = v if self.echo_cm is None else min(self.echo_cm, v)
+                vals.append(v)
+        if len(vals) < need:
             return None
-        return statistics.median(vals)
+        return statistics.median_low(vals)
 
 
 class SensorHub:
@@ -96,6 +187,10 @@ class SensorHub:
         self.us = Ultrasonic(gpio, clock, us_pin)
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
+        self._discard_log_t = clock.monotonic()
+        self.clear_t: Optional[float] = None       # this sample's "nothing there" time (D7), see Sample.clear_t
+        self.echo_cm: Optional[float] = None       # this sample's closest echo, see Sample.echo_cm
+        self.echo_t: Optional[float] = None        # when this sample's pings began, see Sample.echo_t
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -126,6 +221,18 @@ class SensorHub:
         forward = l > 0 or r > 0
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
+        self._log_discards()
+        self.echo_cm = self.us.echo_cm
+        self.echo_t = self.us.batch_t
+        self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
+        if v is BUSY:
+            # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
+            # its usual answer: 59-75 % of pings, measured). No reading this sample, but not a fault: it neither
+            # counts toward FAULT_AFTER nor resets it. A line stuck high is caught in ping() (over 0.6 s). It clears
+            # the near/far memory, so the first sample after the blind window takes 3 pings (an obstacle may have
+            # appeared meanwhile). Forward motion still needs a fresh ok/far reading (controller, unchanged).
+            self._last_cm, self._last_far = None, False
+            return None, DIST_NONE if self._nones < FAULT_AFTER else DIST_FAULT
         if v is None:
             self._nones += 1
             self._last_cm, self._last_far = None, False
@@ -136,6 +243,17 @@ class SensorHub:
             return None, DIST_FAR
         self._last_cm, self._last_far = v, False
         return v, DIST_OK
+
+    def _log_discards(self) -> None:
+        now = self.clock.monotonic()
+        if now - self._discard_log_t < 60.0:
+            return
+        d = self.us.discards
+        if sum(d.values()):
+            log.info("ultrasonic: pings discarded in the last %.0f s: %s", now - self._discard_log_t,
+                     " ".join(f"{k} {v}" for k, v in sorted(d.items())))
+        d.clear()
+        self._discard_log_t = now
 
     # -- PCF8591 ----------------------------------------------------------------------------------------
     def _channels(self) -> Sequence[int]:
@@ -163,28 +281,36 @@ class SensorHub:
         return out
 
     # -- line follower ----------------------------------------------------------------------------------
-    def _read_frame(self) -> tuple[Optional[list[int]], float]:
-        """One block read under the I2C lock only. Returns (five values, or None for an invalid frame, seconds the
-        bus call took). The module answers all-0xFF now and then (~1 % of frames); any value above LINE_RAW_MAX
-        marks the frame invalid. OSError / IndexError propagate."""
+    def _read_frame(self) -> tuple[Optional[list[int]], float, bool]:
+        """One block read under the I2C lock only. Returns (five values or None, seconds the bus call took, True if
+        the call failed). Measured on the car (2026-11-21): the module is busy for one read every 11 ms and answers
+        all-0xFF then (about 15 % of reads at a 40 ms cadence), and about 1 sample in 300 gets EIO; any value above
+        LINE_RAW_MAX marks the frame invalid."""
         with self.lock:
             t0 = self.clock.monotonic()
-            raw = self.bus.read_i2c_block_data(LINE_ADDR, 0, 10)
+            try:
+                raw = self.bus.read_i2c_block_data(LINE_ADDR, 0, 10)
+            except OSError:
+                return None, self.clock.monotonic() - t0, True
             took = self.clock.monotonic() - t0
-        vals = [(raw[2 * i] << 8) | raw[2 * i + 1] for i in range(5)]
-        return (None if max(vals) > LINE_RAW_MAX else vals), took
+        try:
+            vals = [(raw[2 * i] << 8) | raw[2 * i + 1] for i in range(5)]
+        except (IndexError, TypeError):
+            return None, took, True
+        return (None if max(vals) > LINE_RAW_MAX else vals), took, False
 
-    def _read_checked(self) -> tuple[Optional[list[int]], bool]:
-        """A frame, retried once at once when invalid, but never after a slow bus call (a stalling module must
-        hold the bus lock only once). Returns (values or None, True if a bus call was slow)."""
-        slow = False
-        for _ in range(2):
-            vals, took = self._read_frame()
+    def _read_checked(self, attempts: int = 2) -> tuple[Optional[list[int]], bool, bool]:
+        """A frame, retried once at once when invalid or when the call failed fast (the next read is outside the
+        module's busy window), but never after a slow bus call (a stalling module must hold the bus lock only once).
+        Returns (values or None, True if a bus call was slow, True if the last call failed)."""
+        slow = failed = False
+        for _ in range(attempts):
+            vals, took, failed = self._read_frame()
             if took > LINE_MOVING_SLOW_S:
                 slow = True
             if vals is not None or slow:
-                return vals, slow
-        return None, slow
+                return vals, slow, failed
+        return None, slow, failed
 
     def _read_line(self) -> Optional[list[int]]:
         """Stopped: probe under the motor lock (with backoff while absent). Moving: only when healthy (see
@@ -216,33 +342,35 @@ class SensorHub:
         car has been stopped (docs/decisions.md D4)."""
         if self._line_suppressed or not self.line_ok or self._line_good < LINE_MOVING_MIN_GOOD:
             return None
-        try:
-            vals, slow = self._read_checked()
-        except (OSError, IndexError) as e:
-            self._suppress_line(f"read failed ({e})")
-            return None
-        if vals is None:
-            self._suppress_line(f"a read took more than {LINE_MOVING_SLOW_S * 1000:.0f} ms" if slow
-                                else "two invalid frames in a row")
-            return None
+        vals, slow, failed = self._read_checked()
         if slow:
             self._suppress_line(f"a read took more than {LINE_MOVING_SLOW_S * 1000:.0f} ms")
-        else:
-            self._line_good += 1
+            return vals                                    # a valid frame is still used, once
+        if vals is None:                                   # failed twice, fast: skip this sample
+            self._line_invalid_run += 1
+            if self._line_invalid_run >= LINE_ABSENT_AFTER:
+                self._suppress_line(f"{LINE_ABSENT_AFTER} samples in a row without a frame"
+                                    + (" (I2C errors)" if failed else ""))
+            else:
+                self.line_skipped = True
+            return None
+        self._line_invalid_run = 0
+        self._line_good += 1
         return vals
 
     def _suppress_line(self, why: str) -> None:
         self._line_suppressed = True
         self._line_good = 0
+        self._line_invalid_run = 0
         log.warning("line follower: not reading while moving until the car stops (%s)", why)
 
     def _probe_line(self, now: float) -> Optional[list[int]]:
-        try:
-            vals, slow = self._read_checked()
-        except (OSError, IndexError):
-            return self._line_failed(now)
-        if vals is None:                                   # invalid (twice, or once and slow): skip this sample
-            self._line_good = 0
+        vals, slow, failed = self._read_checked(2 if self.line_ok else 1)   # absent / never seen: one read per probe
+        if vals is None and failed and not self.line_ok:
+            return self._line_failed(now)                  # not present (never seen, or absent): back off at once
+        if vals is None:                                   # failed twice (or once and slow): skip this sample
+            if slow:
+                self._line_good = 0                        # seen stalling: no moving reads until 10 good reads again
             self._line_invalid_run += 1
             if self._line_invalid_run >= LINE_ABSENT_AFTER:
                 return self._line_failed(now)
@@ -281,4 +409,5 @@ class SensorHub:
         cm, state = self._read_distance()
         return Sample(t=self.clock.monotonic(), dist_cm=cm, dist_state=state,
                       line_raw=self._read_line(), light_raw=self._read_light(),
-                      line_skipped=self.line_skipped)
+                      line_skipped=self.line_skipped, clear_t=self.clear_t, echo_cm=self.echo_cm,
+                      echo_t=self.echo_t)

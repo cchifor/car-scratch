@@ -13,7 +13,7 @@ HOME_DIR=$(getent passwd "$CAR_USER" | cut -d: -f6)
 
 # 1. packages (the server runs on apt packages only)
 MISSING=""
-for p in python3-aiohttp python3-smbus2 rsync; do
+for p in python3-aiohttp python3-rich python3-smbus2 rsync; do
     dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"
 done
 if [ -n "$MISSING" ]; then
@@ -40,13 +40,17 @@ fi
 if command -v nmcli >/dev/null 2>&1; then
     WIFI=$(nmcli -t -f NAME,TYPE connection show --active | awk -F: '$2 ~ /wireless/ {print $1; exit}')
     if [ -n "$WIFI" ]; then
-        if [ "$(nmcli -g 802-11-wireless.powersave connection show "$WIFI")" != "2" ]; then
-            nmcli connection modify "$WIFI" 802-11-wireless.powersave 2
-            note "WiFi power-save disabled in NetworkManager connection '$WIFI' (fully effective after reconnect/reboot)"
-        fi
+        # nmcli -g prints the name ("disable"), older releases the number ("2")
+        case "$(nmcli -g 802-11-wireless.powersave connection show "$WIFI")" in
+            2|disable) ;;
+            *)  nmcli connection modify "$WIFI" 802-11-wireless.powersave 2
+                note "WiFi power-save disabled in NetworkManager connection '$WIFI' (fully effective after reconnect/reboot)" ;;
+        esac
         if command -v iw >/dev/null 2>&1; then
             IFACE=$(iw dev | awk '$1 == "Interface" {print $2; exit}')
-            [ -n "$IFACE" ] && iw dev "$IFACE" set power_save off 2>/dev/null && note "iw: power_save off on $IFACE (live)"
+            if [ -n "$IFACE" ] && iw dev "$IFACE" get power_save 2>/dev/null | grep -q ': on'; then
+                iw dev "$IFACE" set power_save off 2>/dev/null && note "iw: power_save off on $IFACE (live)"
+            fi
         fi
     else
         echo "no active WiFi connection found; skipped power-save"
@@ -78,10 +82,11 @@ write_file() {   # write_file <path> [mode] ; content on stdin ; returns 0 when 
 if write_file /etc/systemd/system.conf.d/car-scratch-watchdog.conf <<'CONF'
 [Manager]
 RuntimeWatchdogSec=10
+RebootWatchdogSec=60
 CONF
 then
     systemctl daemon-reexec
-    note "hardware watchdog on: /etc/systemd/system.conf.d/car-scratch-watchdog.conf (RuntimeWatchdogSec=10)"
+    note "hardware watchdog on: /etc/systemd/system.conf.d/car-scratch-watchdog.conf (RuntimeWatchdogSec=10; a reboot that hangs is forced after 60 s instead of systemd's 10 min)"
 fi
 
 # 6. boot-time motor zeroing (system unit, runs as root before the user service exists).
@@ -129,6 +134,29 @@ fi
 if ! systemctl is-enabled car-safe-stop.service >/dev/null 2>&1; then
     systemctl enable car-safe-stop.service >/dev/null 2>&1
     note "enabled car-safe-stop.service"
+fi
+
+# 6b. `carctl` (terminal dashboard + keyboard driving, docs/carctl.md): a root-owned launcher that runs the
+#     deployed copy as the calling user. ssh -t c4@picar.local carctl
+if write_file /usr/local/bin/carctl 0755 <<CONF
+#!/bin/sh
+PYTHONPATH=$HOME_DIR/car-scratch/current/server exec python3 -m tools.carctl "\$@"
+CONF
+then
+    note "installed /usr/local/bin/carctl (root-owned)"
+fi
+
+# 6c. `car` (one short command for every tool: car, car drive, car sensors, car logs, car wifi ...; deploy/car).
+#     A root-owned copy of the deployed script, like safe_stop.py above: re-run pi-setup.sh after a deploy that
+#     changes it.
+SRC_CAR="$HOME_DIR/car-scratch/current/car"
+if [ -f "$SRC_CAR" ]; then
+    if ! cmp -s "$SRC_CAR" /usr/local/bin/car 2>/dev/null; then
+        install -m 0755 -o root -g root "$SRC_CAR" /usr/local/bin/car
+        note "installed /usr/local/bin/car (root-owned)"
+    fi
+else
+    echo "note: no deployed release with the 'car' shortcut yet; re-run pi-setup.sh after the next deploy" >&2
 fi
 
 # 7. hardware access groups (informational)

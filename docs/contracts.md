@@ -15,7 +15,7 @@ Every controller (the shared car, and each private sim) applies these rules.
 | Command-time check | A forward motor write is refused with `err obstacle_blocked` when `blocked`, or when the latest `dist.cm < margin_cm(proposed effective speed)` (guard on), or with `err sensor_fault` when the sensor is not valid. |
 | Margin | `margin_cm = stop_cm + coast_cm(s) + speed_cm_s(s) × 0.2 s` (0.2 s = sensing + reaction allowance), where `s` = effective user speed (after `speed_limit`), `coast_cm` from `coast_table[s]`, `speed_cm_s` from `speed_table[duty%(s)]` (§3). Default `stop_cm` 20. |
 | Guard off | `config{obstacle_stop:false}` disables only the **distance** stop (telemetry shows it; UI shows a permanent banner). Sensor **fault/freshness/startup** protection stays on. While off, a forward `drive` auto-stops after **5 s** without a fresh motion command (`event drive_timeout`). |
-| Sensor validity | Before the first valid sample, after 3 consecutive `none` samples (`fault`), or when the last `ok`/`far` sample is older than 150 ms: forward motion is stopped/refused with `event sensor_fault` / `err sensor_fault` (never `obstacle_stop`, so avoidance hats do not fire). Backward motion is still allowed. |
+| Sensor validity | Before the first valid sample, after 3 consecutive `none` samples (`fault`), or when the last `ok`/`far` distance was measured more than 150 ms ago (`Sample.t`, not the arrival time) and no trusted "nothing there" reading covers it (decision D7: up to 0.48 s from its ping, no echo since, none closer than 1 m in the last second), and no recent echo is far enough away for the travel since (decision D8): forward motion is stopped/refused with `event sensor_fault` / `err sensor_fault` (never `obstacle_stop`, so avoidance hats do not fire). Backward motion is still allowed. |
 | One motor path | Every motor write (drive, move start, `set_speed`, `config` change, speed-limit change) goes through **one** function that applies limits, the command-time obstacle check at the *proposed* effective speed, and the inhibit latch. Lowering `speed_limit` reduces running motion immediately. Each motion gets a **generation number**; timers and deferred callbacks may only touch the motors if their generation is still current. |
 | Server start | The shared car starts **on hold** (a restart never resumes old motion). |
 | Mode/control transitions | Switching mode, losing control, `world` change and sim `reset_pose` stop motion first (and latch hold for the car controller). |
@@ -96,8 +96,9 @@ Threading rules (real/dry-run):
   loop saw a gap > 1 ms between iterations.
 - The line follower is probed with a back-off while stopped, and read **while the car moves** only under the
   guards of decision D4 (`docs/decisions.md`): `line_enabled`, a healthy module (10 good reads in a row since its
-  last failure), only the I2C bus lock (never the motor lock), and a switch-off until the next stop after an
-  error, two invalid frames in a row or a bus call over 15 ms. `line_enabled` defaults to false (§3).
+  last failure), only the I2C bus lock (never the motor lock), and a switch-off until the next stop after
+  3 samples in a row without a frame or a bus call over 15 ms (decision D6). An invalid frame or a quick I2C error
+  is retried once at once; a sample that still fails is skipped. `line_enabled` defaults to false (§3).
 
 Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
 
@@ -109,9 +110,13 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
   `ticks = round((600 + 1800 * angle / 180) / 1e6 * 60 * 4096)` (90° → 369).
 - Ultrasonic: single SIG pin GPIO5 (output-low 2 ms, high 10 µs, low, switch to input, time the echo).
   Echo-start timeout 30 ms → no answer. Echo that ends after 12 ms but before 40 ms → `far` (> ~2 m).
-  Echo still high at 40 ms → no answer (stuck line — never treated as `far`).
-  Median of 3 pings when the last reading was < the near hint or the car moves forward; else 1 ping.
-  A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`.
+  Echo still high at 40 ms → the module is **busy** (never treated as `far`): no new trigger while the line is
+  high (the module ignores triggers, and driving the pin low would fight its output); still high after 0.6 s →
+  no answer (stuck line). See decision D5.
+  Median of 3 pings when the last reading was < the near hint, after `none` or a busy cycle, or when the car
+  moves forward; else 1 ping. With only 2 valid pings the lower one counts (never an average with `far`).
+  A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`. A busy sample is `none` and never
+  counts toward the fault (facing open space most pings are long cycles).
 - PCF8591: for each input `ch` in `light_channels` (left, middle, right; default 0, 1, 2):
   `write_byte(0x48, 0x40|ch)`, discard one read, then read. `light_raw` is ordered left, middle, right.
 - Line follower: `read_i2c_block_data(0x11, 0, 10)` → 5 big-endian 16-bit values. A frame with any value

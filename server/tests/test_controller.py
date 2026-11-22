@@ -6,7 +6,7 @@ import pytest
 
 from picar_server import safety
 from picar_server.controller import CmdError
-from picar_server.hal.base import DIST_FAR, DIST_FAULT, DIST_NONE, DIST_OK
+from picar_server.hal.base import DIST_FAR, DIST_FAULT, DIST_NONE, DIST_OK, Sample
 
 from conftest import FakeBackend, Rig
 
@@ -127,7 +127,8 @@ def test_guard_off_ignores_distance_but_not_sensor_faults(rig):
     assert rig.backend.duty[0] > 0
     rig.sample(state=DIST_FAULT)
     assert rig.backend.duty == (0, 0)
-    assert ("sensor_fault", {"sensor": "ultrasonic"}) in rig.events and "obstacle_stop" not in rig.kinds()
+    assert ("sensor_fault", {"sensor": "ultrasonic", "reason": "no_answer"}) in rig.events
+    assert "obstacle_stop" not in rig.kinds()
 
 
 def test_guard_off_forward_drive_times_out_after_5s(rig):
@@ -148,11 +149,39 @@ def test_sensor_fault_is_not_an_obstacle_stop(rig):
     rig.cmd("drive", dir="backward", speed=30)         # backward still allowed
 
 
-def test_stale_good_sample_stops_forward(rig):
+def test_stale_good_sample_stops_forward():
+    rig = Rig()
+    rig.run(0.2, cm=rig.ctl._margin(50) + 1.0)        # close: too close to drive on without readings (D8)
     rig.cmd("drive", dir="forward", speed=50)
     rig.clock.advance(0.2)
     rig.sample(state=DIST_NONE)                        # last ok/far sample is older than 150 ms
     assert rig.backend.duty == (0, 0) and "sensor_fault" in rig.kinds()
+
+
+@pytest.mark.parametrize("guard", [True, False], ids=["distance-guard-on", "distance-guard-off"])
+def test_aged_distance_sample_refuses_a_forward_start(rig, guard):
+    # Review finding: freshness counts from when the distance was measured (Sample.t), not when the sample arrived;
+    # a sample delayed by a slow line read must not make a 300 ms old distance look fresh.
+    # (close enough that D8 cannot drive on it either)
+    rig.cmd("config", obstacle_stop=guard)
+    rig.clock.advance(0.3)
+    rig.ctl._on_sample(Sample(rig.clock() - 0.3, rig.ctl._margin(30) + 1.0, DIST_OK, None, None))
+    assert code(rig, "drive", dir="forward", speed=30) == "sensor_fault"
+
+
+@pytest.mark.parametrize("guard", [True, False], ids=["distance-guard-on", "distance-guard-off"])
+def test_aged_distance_sample_stops_forward_motion(rig, guard):
+    rig.cmd("config", obstacle_stop=guard)
+    rig.cmd("drive", dir="forward", speed=50)
+    rig.clock.advance(0.3)
+    rig.ctl._on_sample(Sample(rig.clock() - 0.3, rig.ctl._margin(50) + 1.0, DIST_OK, None, None))
+    assert rig.backend.duty == (0, 0) and "sensor_fault" in rig.kinds()
+
+
+def test_fresh_sample_after_a_delay_is_accepted(rig):
+    rig.clock.advance(0.3)
+    rig.ctl._on_sample(Sample(rig.clock() - 0.01, 100.0, DIST_OK, None, None))
+    assert rig.cmd("drive", dir="forward", speed=30) == {"speed": 30}
 
 
 def test_far_samples_are_valid(rig):
@@ -170,7 +199,7 @@ def test_loop_freshness_stops_forward_when_samples_vanish(rig):
     rig.cmd("drive", dir="forward", speed=30)
     rig.run(0.7, state=None)                           # no samples at all
     assert rig.backend.duty == (0, 0) and rig.ctl.blocked
-    assert ("sensor_fault", {"sensor": "ultrasonic"}) in rig.events
+    assert ("sensor_fault", {"sensor": "ultrasonic", "reason": "no_samples"}) in rig.events
 
 
 # ---- watchdog, hold, pause, disconnect --------------------------------------------------------------------
@@ -456,4 +485,4 @@ def test_sensor_events_fault_and_recovery(rig):
     rig.sample(state=DIST_FAULT)
     rig.sample(cm=50)
     assert [e for e in rig.events if e[0] in ("sensor_fault", "sensor_ok")] == [
-        ("sensor_fault", {"sensor": "ultrasonic"}), ("sensor_ok", {"sensor": "ultrasonic"})]
+        ("sensor_fault", {"sensor": "ultrasonic", "reason": "no_answer"}), ("sensor_ok", {"sensor": "ultrasonic"})]

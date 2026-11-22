@@ -103,3 +103,194 @@ timeout and by the existing layers behind it (the `hw_fault` latch when the moto
 systemd and hardware watchdogs). A slow call is never retried and switches moving reads off, so the line
 follower adds at most one stalled call before it is off for that drive. The owner can turn the feature off with
 `line_enabled: false`.
+
+## D5 — Ultrasonic long no-echo cycle is "busy", not a fault (2026-11-21)
+
+**Symptom.** `sensor_fault` / `sensor_ok` for the ultrasonic flapped about once a second (45 to 54 times a
+minute) while the car stood still facing a weak reflector about 110 cm away.
+
+**Measured on the car (2026-11-21).**
+
+- A passive observer read GPIO5 through `/dev/gpiomem` (never claiming the pin) while the server ran. In that pose
+  most echoes were the module's normal no-echo timeout (27 ms, reported `far`), a few were real (6 ms, ~105 cm),
+  and 56 of 204 pulses were 40.2 to 49 ms: the server cutting them at its 40 ms limit.
+- With the server stopped and pulses never cut: about one ping in 15 (8 of 120) the module holds the line high for
+  a fixed **401.5 ms** instead of 27 ms, ignoring triggers meanwhile, then answers normally. Two such cycles back to
+  back occur. More rest between pings did not prevent it (2 to 60 ms tried).
+- The old code cut the pulse at 40 ms, returned "no answer", and re-triggered: about 9 failed pings during one
+  cycle, three `none` samples, so `fault`, then `ok` when the cycle ended. Each re-trigger also drove the pin low
+  for 2 ms against the module's high output.
+
+**Decision.**
+
+1. An echo still high at 40 ms is `BUSY` (the module's long cycle), never `far`. While the line stays high the
+   pin is not driven and not re-triggered.
+2. A busy sample is `none` and never counts toward the 3-sample fault. A line high for longer than 0.6 s (one
+   cycle is 401.5 ms) is a stuck line and counts as "no answer" as before, and so does no rising edge after the
+   trigger. (A first version also faulted after 1.5 s without an `ok`/`far` reading. Facing open space that
+   fired every few seconds: with the server stopped, 59 to 75 % of pings were long cycles at every rest between
+   pings from 2 to 100 ms, and none of 300 pings returned a real echo. A cycle that starts on the trigger and ends
+   by itself is a living module that heard nothing, so that rule was removed.)
+3. Motion safety is unchanged: a forward start needs an `ok`/`far` distance measured less than 150 ms ago, and
+   while driving forward the same check runs at every sensor sample (about every 40 ms); if samples stop arriving,
+   the controller loop's own check stops forward motion after 0.5 s. During a busy cycle a forward drive is
+   therefore refused or stopped; only the false fault flag and its events are gone. (Second review: freshness used
+   to count from when a sample *arrived*, so a sample delayed by a slow line read made an old distance look fresh;
+   it now counts from `Sample.t`, taken right after the pings. That flaw predates D5.)
+
+**Review follow-ups (same day).** An independent review found two problems in the same path, both fixed with
+tests: (a) the change kept the "last reading was far" memory across a busy cycle, so the next sample took one
+ping; an obstacle that appeared during the blind window and a single missed echo would have published `far`. A
+busy sample now clears that memory, so the next sample takes 3 pings. (b) Pre-existing: with 2 valid pings of 3
+the median averaged them, so `far` (999) and a real 10 cm echo made 505 cm. The lower of two valid pings now
+counts (`median_low`).
+
+**Residual.** Driving forward toward a weak reflector, or into open space, still stops the car when the module goes
+into its long cycle (no fresh reading for 150 ms); facing open space that is most of the time. Accepting "busy" as clear for up to one cycle while moving would remove those
+stops at the cost of up to ~0.4 s without distance data (about 10 cm at full speed); that is an owner decision and
+is not made here.
+
+## D6 — Line follower: retry quick failures, lose the module only after 3 failed samples (2026-11-21)
+
+**Symptom.** `sensor_fault` / `sensor_ok` for the line follower about every 10 to 20 s with the car standing
+still, each time with "line follower absent", then "present" 2 s later.
+
+**Measured on the car (2026-11-21, server stopped).** D4 assumed about 1 % invalid frames (from 40 reads). Longer
+runs show:
+
+- Back-to-back reads (1883 in 6 s): the module is busy for one read (2.9 ms) every 11 ms and answers all-0xFF
+  then; the next read is valid. 31 % of back-to-back reads, about 15 % at the server's 40 ms cadence.
+- The server's exact pattern (light reads, then a line read with one immediate retry, every 40 ms): 1500 samples
+  with no I2C error and 2 samples invalid after the retry, never two in a row; in other runs about 1 sample in 300
+  got EIO (errno 5), with or without ultrasonic pings, always followed by good reads.
+- A missing device is NACKed at once (D4); an EIO here is a transfer error from a present module.
+
+The old rules turned these into losses: one I2C error made the module absent at once (2 s back-off, then present
+again: one flap every ~13 s at 25 samples a second), and while moving one error or one sample with two invalid
+frames switched moving reads off until the next stop, which at these rates happens within seconds of driving.
+
+**Decision.**
+
+1. An invalid frame or an I2C error that returns quickly is retried once at once (as invalid frames already were).
+2. A sample that still has no frame is skipped (telemetry bridges one skipped frame; the controller raises its line
+   `sensor_fault` only after 3 samples without a frame). Only 3 failed samples in a row make a present module
+   absent while stopped, or switch moving reads off until the next stop while moving.
+3. A module that is not present (never seen, or absent and re-probed after its back-off) is read once per probe and
+   backs off on an error, as before.
+4. Unchanged from D4: a bus call slower than 15 ms switches moving reads off at once (the stalled-slave protection),
+   and moving reads take only the bus lock. They need 10 good reads since the last failure, where a failure is now a
+   slow bus call (stopped or moving, valid frame or not) or losing the module (3 failed samples); an isolated quick
+   failed sample is not one, because it cannot stall the bus. (Second review: a slow failed read while stopped
+   kept the qualification in the first version of D6; it now resets it.)
+
+**Risk.** Bus time per sample is bounded as before: at most two quick reads (about 6 ms) per sample under the bus
+lock, and a module that keeps failing is dropped after 3 samples (about 120 ms).
+
+## D7 — Trust a "nothing there" reading for 0.48 s while driving forward (owner decision, 2026-11-21)
+
+**Context.** Facing open space the ultrasonic module answers most pings with its 401.5 ms long cycle (D5), so an
+`ok`/`far` reading younger than 150 ms is rare and forward driving was refused or stopped (`sensor_fault: no fresh
+distance reading`, then `BLOCKED`).
+
+**Owner decision.** Trust a "nothing there" reading for a short time while driving forward, accepting that the car
+is blind for that long. Measured on the car with a passive pin observer (60 s facing open space): consecutive long
+cycles start 409 to 413 ms apart, and a cycle is only known 40 ms after its ping, its sample reaching the controller
+a few ms later; so counted from the ping the car is blind up to about 0.463 s between readings. 0.4 s (first
+proposal) stopped the car about 80 times a minute. The owner chose **0.48 s counted from the ping**: blind for up to
+11.7 cm at full speed (24.4 cm/s). (A first build counted 0.45 s from the detection, which really allowed about 0.49 s.)
+
+**Rule.**
+
+1. A "nothing there" reading (`Sample.clear_t`, the time of its ping) is a ping that ended `far`, or that began a long
+   cycle cleanly (no echo for 40 ms without a timing gap), in a sample where no ping heard an echo. Finding the
+   module still busy is not a new reading. A ping discarded for a timing gap that may have ended within range still
+   counts as an echo (`Sample.echo_cm` = the closest it could have been).
+2. Forward motion may start or continue when an `ok`/`far` distance was measured at most 150 ms ago (unchanged) **or**
+   a "nothing there" reading is at most 0.48 s old **and** no echo was heard after it **and** no echo closer than the
+   near distance was heard in the last second. The near distance is 1 m, or twice the full-speed stopping margin when
+   that is more (a large `stop_cm`). An object last heard just under 1 m away cannot come closer than about 60 cm
+   before the trust runs out, even at full speed.
+3. While `blocked`, a "no reading" sample inside a trusted window counts like `far` toward releasing it.
+4. Unchanged: a fault still stops and refuses; the obstacle guard acts on every `ok` reading; the controller loop
+   stops forward motion when samples stop arriving for 0.5 s; the simulator sends no `clear_t`, so it behaves as
+   before.
+
+**Independent review (third round) before the first deploy** found three ways the first build relaxed more than
+this: a near echo dropped for a timing gap vanished entirely; the window counted from the detection, so a stuck line
+or a scheduling delay stretched it; and an obstacle whose 150 ms reading had expired could be forgotten in favour of
+an older "nothing there". All three are fixed as above, each with a test, plus integration tests that run the real
+sensor code into the controller on one clock (open-space rhythm keeps driving; a line stuck high after one cycle
+stops within the window; a dropped near echo blocks the trust).
+
+**Fourth review round** found three timing and settings gaps, fixed with tests that try a stall at every
+instruction position: a stall between a pin read and its timestamp could hide a near echo (each read is now
+bounded by the timestamp taken before it, and a ping whose echo window was not watched counts as a possible echo);
+a stall at the rising edge could make the reading's time late (it is now taken before the trigger, so it is never
+later than the ping); and echoes were judged "near" against the settings at the time they were heard (the last
+second of echoes is kept and judged against the current stop distance).
+
+**Residual.** For up to 0.48 s the car drives on a reading that said nothing was in range: something that moves into
+the path in that time, or a reflector the module cannot hear (which can already read `far`), is not seen until the
+next reading.
+
+## D8 — Near an obstacle, drive through missed readings while the last echo is far enough (owner decision, 2026-11-21)
+
+**Context.** A drive recorded on the car (8 minutes; telemetry, events and the sensor pin's raw pulses) showed
+about 20 forward stops labelled `sensor_fault`, none of them a sensor fault: each was a run of good echoes, then one
+long cycle (a missed reading, 400 ms) while driving toward something under 1 m away. Near an obstacle D7's trust is
+off, so one missed reading stopped the car. (The battery was low: 7 `power_low` events, and the Pi throttled, but the
+sensor still answered 99.9 % of pings with the motors running; low power was not the cause.)
+
+**Owner decision.** Keep driving through missed readings while the last measured distance, minus the farthest the
+car could have travelled since, stays above the stopping margin.
+
+**Rule.**
+
+1. Forward motion may also start or continue when every echo heard in the last 0.48 s (an `ok` reading, or any
+   ping's echo in the sample, including the lower bound of a ping dropped for a timing gap), minus the speed limit's
+   ground speed x (its age + 0.1 s), is at or beyond the stopping margin at the current speed. The 0.1 s covers the
+   time to the next check: a sample every 40 ms, and the controller loop now checks freshness on every 50 ms tick
+   as well, so this holds even if the sensor thread stalls (before, only a 0.5 s "no samples" fallback did).
+2. It never releases `blocked`.
+3. Example at the car's calibration (24.4 cm/s at full speed, 37 cm margin): an echo at 80 cm keeps it driving for up
+   to 0.48 s without readings; an echo at 50 cm stops it after 0.15 s as before.
+
+**Also changed (no decision needed).**
+
+- Ultrasonic `sensor_fault` events carry `reason`: `no_answer` (a real fault, paired with `sensor_ok`), `no_reading`
+  (a freshness stop) or `no_samples` (the sensor thread stopped delivering).
+- A ping whose timing loop was interrupted is still `far` when the line was seen high past 12 ms: no echo can have
+  ended within range. The recording showed 8 standstill faults made of good `far` answers thrown away this way.
+- The reasons pings give no reading (`no_rise`, `gap`, `unwatched`, `stuck`) are counted and logged once a minute.
+
+**Independent review (sixth round) before the first deploy** found three gaps, fixed with tests: a line that dipped
+(echo ended) and rose again inside a timing stall could still read `far` (only highs seen before the first stall
+count now); an echo was dated by its sample's end although its ping could be ~80 ms older (D8 now dates every echo
+from the start of its sample's pings, D7's near memory still from the end); and a loop tick and a sample could both
+report the same stop (the first to set `blocked` reports it). Testing every stall position also found that a stall
+between the trigger and the first read could hide a whole echo; stalls are now measured from the trigger.
+
+**Seventh round** found two more stall paths (a stall before the first read hid the rise; a stalled ping that ended
+in a long cycle dropped its possible echo). Instead of patching paths one by one, the ping now follows one rule: a
+stall anywhere from the trigger to the decision means the line was not watched, so the ping yields no distance and
+no "nothing there" and records a possible echo at its safe lower bound (0 when the rise itself was not watched).
+The only exception is `far` when the rise and the first 12 ms were watched without a stall. A property test checks
+it for every stall position, three stall lengths and three pulse patterns (an echo hidden before a second high pulse
+or a long cycle): the hidden echo always surfaces as an echo no farther than it was, and never as "nothing there".
+
+**Eighth round** confirmed the stall rule (healthy pings classified exactly as before over 13,479 comparisons) and
+found that a pause under the 1 ms stall threshold right at an echo's end made the distance read too far (46 cm for
+34 cm). The end of an echo is now timed from the last read that saw the line high, so a reading is never farther
+than the truth (normally under 1 cm closer).
+
+**Residual: a dip shorter than the polling can see.** The same round showed that a sensor whose output ends an echo
+and goes high again within a fraction of a millisecond could hide that echo from any polling loop. Measured on the
+car (passive observer, 8 minutes, about 20,300 pings at microsecond resolution): 1.9 % of pings have two pulses, and
+the pattern is always a 0.2 to 0.7 ms glitch (it would be an object at 3 to 12 cm), a 0.06 to 0.2 ms dip, then the
+real echo (median end 6.4 ms, about 1.1 m); the first pulse rises 416 us after the trigger like any echo. That is
+the reverse of the hazard (a glitch before the real echo, not a stray pulse after a real one). When the polling sees
+the dip it reads a false echo at about 8 cm, which is the safe direction: it only disables the D7/D8 trust for a
+second. Not chased further.
+
+**Residual.** As D7: something that moves toward the car while it drives on an echo-based bound is seen only at the
+next reading.

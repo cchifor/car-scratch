@@ -1,0 +1,39 @@
+#!/bin/sh
+# car - the `car` shortcut on a workstation (Linux, macOS, Git Bash): runs the car's own `car` command over SSH.
+#
+#   car                      live dashboard          car drive         dashboard + keyboard driving
+#   car status | estop | reset | resume | stop       car sensors       live line + light readings
+#   car calib light|line|trim                        car logs          the car server's log (follow)
+#   car restart | version                            car wifi ...      hotspot control (admin account)
+#   car web                  open the app            car ssh | admin   a shell on the car (c4 | carops)
+#   car deploy [--dry-run]   deploy this checkout (docker compose, from the repository)
+#
+# The car: $CAR_HOST (default picar.local; in hotspot mode 10.42.0.1).
+# Install: ln -s "$PWD/workstation/car" ~/.local/bin/car   (or add workstation/ to PATH)
+set -eu
+
+HOST=${CAR_HOST:-picar.local}
+TTY=""; [ -t 0 ] && TTY=-t   # a terminal for the dashboards and keys; plain output when piped or scripted
+REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+cmd=${1:-watch}
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+    web)
+        url="http://$HOST:8080/"
+        for opener in xdg-open open start; do
+            command -v "$opener" >/dev/null 2>&1 && exec "$opener" "$url"
+        done
+        echo "$url" ;;
+    ssh) exec ssh "c4@$HOST" ;;
+    admin) exec ssh "carops@$HOST" ;;
+    deploy)
+        cd "$REPO"
+        if [ "${1:-}" = "--dry-run" ]; then
+            exec docker compose --profile deploy run --rm deploy
+        fi
+        exec docker compose --profile deploy run --rm deploy sh deploy/deploy.sh ;;
+    wifi) exec ssh $TTY "carops@$HOST" car wifi "$@" ;;
+    help|-h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) exec ssh $TTY "c4@$HOST" car "$cmd" "$@" ;;
+esac

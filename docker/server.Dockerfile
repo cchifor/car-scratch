@@ -8,7 +8,7 @@ WORKDIR /app
 
 FROM base AS test
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3-pytest python3-pytest-asyncio python3-pytest-aiohttp \
+ && apt-get install -y --no-install-recommends python3-pytest python3-pytest-asyncio python3-pytest-aiohttp python3-rich \
  && rm -rf /var/lib/apt/lists/*
 
 FROM base AS run

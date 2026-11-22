@@ -13,6 +13,7 @@ bad() { echo "FAIL - $1"; FAILS=$((FAILS + 1)); }
 mkdir -p "$T/bin" "$T/repo/deploy" "$T/repo/server" "$T/repo/out/www"
 cp "$SRC/deploy/deploy.sh" "$T/repo/deploy/deploy.sh"
 echo '[Unit]' > "$T/repo/deploy/car-scratch.service"
+echo '#!/bin/sh' > "$T/repo/deploy/car"
 echo 'x = 1' > "$T/repo/server/app.py"
 cat > "$T/bin/ssh" <<'EOF'
 #!/bin/sh
