@@ -45,7 +45,7 @@ case "$cmd" in
         as_car_user systemctl --user restart car-scratch
         echo "car server restarted" ;;
     version)
-        exec python3 -c 'import json,urllib.request; s=json.load(urllib.request.urlopen("http://127.0.0.1:8080/api/status",timeout=3)); print("Car Scratch", s["version"], s["sha"], "| car", s["car"]["backend"], "| sensors", ", ".join(k for k,v in s["car"]["capabilities"].items() if v))' ;;
+        exec python3 -c 'import json,urllib.request; s=json.load(urllib.request.urlopen("http://127.0.0.1:8080/api/status",timeout=3)); print("Car Scratch", s["version"], s["sha"], "| car", s["car"]["backend"], "| sensors", ", ".join(k for k,v in s["car"]["capabilities"].items() if v), *(["| ultrasonic timing", s["car"]["ultrasonic_timing"]] if s["car"].get("ultrasonic_timing") else []))' ;;
     wifi) exec sudo car-wifi "$@" ;;
     help|-h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
     *) echo "car: unknown command '$cmd' (try: car help)" >&2; exit 2 ;;

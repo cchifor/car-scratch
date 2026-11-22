@@ -37,6 +37,8 @@ MAX_BODY = MAX_FILE + (1 << 20)
 class Settings:
     port: int = 8080
     hardware: str = "auto"                 # auto | real | dryrun | sim | none
+    us_timing: str = "poll"                # poll | edges | auto: how the real/dry-run backend times echoes (D9);
+                                           # polling until the edge timing is validated on the car
     www: Optional[Path] = None
     examples: Optional[Path] = None
     source: Optional[Path] = None
@@ -61,7 +63,7 @@ def make_backend(settings: Settings, cal: dict):
         if kind == "sim":
             return SimBackend(load_world(DEFAULT_WORLD), cal), {}
         module, cls = ("dryrun", "DryRunBackend") if kind == "dryrun" else ("real", "RealBackend")
-        return getattr(importlib.import_module(f"picar_server.hal.{module}"), cls)(cal), {}
+        return getattr(importlib.import_module(f"picar_server.hal.{module}"), cls)(cal, us_timing=settings.us_timing), {}
     except Exception as e:  # ImportError, missing I2C bus, permissions ...
         log.error("hardware unavailable (%s): %s", kind, e)
         return None, {"error": f"{type(e).__name__}: {e}"}
@@ -174,6 +176,7 @@ def create_app(settings: Settings) -> web.Application:
     app.router.add_get("/source", _source_redirect)
     app.router.add_get("/{tail:.*}", _www)
     app.on_startup.append(_on_startup)
+    app.on_shutdown.append(_on_shutdown)
     app.on_cleanup.append(_on_cleanup)
     return app
 
@@ -200,6 +203,20 @@ async def _on_startup(app: web.Application) -> None:
     hub.start()
     app["hub"] = hub
     app["sd_task"] = asyncio.get_running_loop().create_task(_sd_loop())
+
+
+async def _on_shutdown(app: web.Application) -> None:
+    """Runs before aiohttp waits for open requests: stop the car, then close every WebSocket. An open socket
+    otherwise kept the process alive past systemd's 2 s stop timeout (7.5 s measured with one viewer), and the
+    motors were left to ExecStopPost."""
+    hub: Optional[Hub] = app.get("hub")
+    if hub is None:
+        return
+    try:
+        hub.car.stop_and_hold("shutdown")
+    except Exception:                                  # noqa: BLE001 - closing the sockets must still happen
+        log.exception("stop on shutdown failed")
+    await hub.stop()
 
 
 async def _on_cleanup(app: web.Application) -> None:

@@ -13,14 +13,19 @@ log = logging.getLogger("picar.dryrun")
 class DryRunBackend(_HardwareBase):
     name = "dryrun"
 
-    def __init__(self, calibration: Optional[dict] = None, *, bus=None, gpio=None, clock=None):
-        super().__init__(calibration, bus, gpio, clock)
+    def __init__(self, calibration: Optional[dict] = None, *, bus=None, gpio=None, clock=None, us_timing: str = "poll",
+                 open_edges=None):
+        super().__init__(calibration, bus, gpio, clock, us_timing=us_timing, open_edges=open_edges)
         # The only hardware write: zero the rear motors once (no chip setup, servo untouched).
-        for ch in (MOTOR_RIGHT_CH, MOTOR_LEFT_CH):
-            try:
-                self.pca.set_pwm(ch, 0)
-            except Exception as e:                     # noqa: BLE001
-                log.warning("dry run: could not zero ch%d: %s", ch, e)
+        try:
+            for ch in (MOTOR_RIGHT_CH, MOTOR_LEFT_CH):
+                try:
+                    self.pca.set_pwm(ch, 0)
+                except Exception as e:                 # noqa: BLE001
+                    log.warning("dry run: could not zero ch%d: %s", ch, e)
+        except BaseException:
+            self._release_ultrasonic()
+            raise
 
     def _write_motors(self, left: int, right: int) -> None:
         if (left, right) != self._motion:

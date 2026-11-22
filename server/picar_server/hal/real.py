@@ -12,7 +12,7 @@ from typing import Callable, Optional
 
 from .base import DUTY_MAX, STEER_MAX_DEG, HardwareFault, OnSample
 from .pca9685 import MOTOR_LEFT_CH, MOTOR_RIGHT_CH, SERVO_CH, PCA9685, servo_ticks
-from .sensors import DEFAULT_LIGHT_CHANNELS, SensorHub, SystemClock
+from .sensors import DEFAULT_LIGHT_CHANNELS, SensorHub, SystemClock, Ultrasonic
 
 log = logging.getLogger("picar.hal")
 
@@ -37,7 +37,10 @@ class _HardwareBase:
 
     name = "base"
 
-    def __init__(self, calibration: Optional[dict], bus=None, gpio=None, clock=None):
+    def __init__(self, calibration: Optional[dict], bus=None, gpio=None, clock=None, us_timing: str = "poll",
+                 open_edges=None):
+        """us_timing: "poll", "edges" or "auto" (decision D9); the server passes its --us-timing, tests default
+        to polling on their fake GPIO. open_edges replaces the kernel line for tests."""
         self.cal = calibration if calibration is not None else {}
         self.clock = clock or SystemClock()
         self.lock = threading.Lock()                   # I2C bus lock (inner)
@@ -61,9 +64,23 @@ class _HardwareBase:
             gpio.setmode(gpio.BCM)
         self.bus, self.gpio = bus, gpio
         self.pca = PCA9685(bus, self.lock, sleep=self.clock.sleep)
+        def make_poll() -> Ultrasonic:
+            return Ultrasonic(gpio, self.clock)
+
+        if us_timing == "poll":
+            us = make_poll()
+        else:                                          # (select_ultrasonic rejects an unknown mode)
+            from .ultrasonic_edges import open_edge_ultrasonic, select_ultrasonic   # Linux-only path
+            us = select_ultrasonic(us_timing, self.clock, make_poll, stop=self._stop_evt,
+                                   open_edges=open_edges or open_edge_ultrasonic)
         self.hub = SensorHub(bus, gpio, self.lock, self.clock, self.motion,
                              lambda: bool(self.cal.get("line_enabled", False)), motor_lock=self._motor_lock,
-                             light_channels=lambda: self.cal.get("light_channels", DEFAULT_LIGHT_CHANNELS))
+                             light_channels=lambda: self.cal.get("light_channels", DEFAULT_LIGHT_CHANNELS),
+                             ultrasonic=us, fallback=make_poll if us.timing == "edges" else None)
+
+    @property
+    def ultrasonic_timing(self) -> str:
+        return self.hub.us.timing
 
     # -- hooks ------------------------------------------------------------------------------------------
     def _write_motors(self, left: int, right: int) -> None:
@@ -203,13 +220,24 @@ class _HardwareBase:
                 sys.setswitchinterval(self._old_switch)
 
     def _join_thread(self) -> None:
-        self._stop_evt.set()
+        self._stop_evt.set()                           # also ends an edge-timed ping's wait (us.stop)
         t = self._thread
         if t is not None and t is not threading.current_thread():
-            t.join(2.0)
+            t.join(1.0)
+            if t.is_alive():
+                # never close the line under a running ping (the fd could be reused); process exit releases it
+                log.error("sensor thread did not stop within 1 s; leaving the ultrasonic line to process exit")
+                self._thread = None
+                return
         self._thread = None
         try:
-            self.gpio.setup(self.hub.us.pin, self.gpio.IN)
+            self.hub.us.close()                        # input, never driven (in edge mode RPi.GPIO never owns it)
+        except Exception:                              # noqa: BLE001
+            pass
+
+    def _release_ultrasonic(self) -> None:
+        try:
+            self.hub.us.close()
         except Exception:                              # noqa: BLE001
             pass
 
@@ -225,17 +253,22 @@ class _HardwareBase:
 class RealBackend(_HardwareBase):
     name = "real"
 
-    def __init__(self, calibration: Optional[dict] = None, *, bus=None, gpio=None, clock=None):
-        super().__init__(calibration, bus, gpio, clock)
+    def __init__(self, calibration: Optional[dict] = None, *, bus=None, gpio=None, clock=None, us_timing: str = "poll",
+                 open_edges=None):
+        super().__init__(calibration, bus, gpio, clock, us_timing=us_timing, open_edges=open_edges)
         self._angle = 0.0
         self._dir = {"left": False, "right": False}    # direction pin level (True = HIGH); pins start LOW
-        # Motors first: zero both channels before anything else can leave them running.
-        self._zero_pwm()
-        for pin in (DIR_RIGHT_GPIO, DIR_LEFT_GPIO):
-            self.gpio.setup(pin, self.gpio.OUT, initial=self.gpio.LOW)
-        self.pca.setup()                                # 60 Hz; also switches every channel off
-        self._zero_pwm()
-        self.set_steering(0.0)
+        try:
+            # Motors first: zero both channels before anything else can leave them running.
+            self._zero_pwm()
+            for pin in (DIR_RIGHT_GPIO, DIR_LEFT_GPIO):
+                self.gpio.setup(pin, self.gpio.OUT, initial=self.gpio.LOW)
+            self.pca.setup()                            # 60 Hz; also switches every channel off
+            self._zero_pwm()
+            self.set_steering(0.0)
+        except BaseException:
+            self._release_ultrasonic()                  # the edge line is an exclusive request: never leak it
+            raise
 
     def _zero_pwm(self) -> None:
         """Both channels are attempted (each with retries) before a failure is reported."""

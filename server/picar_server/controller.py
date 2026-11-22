@@ -663,9 +663,9 @@ class Controller:
         with self._lock:
             self._sample, self._sample_at = s, now
             if s.dist_state in (DIST_OK, DIST_FAR):
-                # Freshness counts from when the distance was measured (Sample.t, taken right after the pings), not
-                # from when the sample arrived: a sample delayed by a slow line read must not look fresh.
-                measured = min(now, s.t)
+                # Freshness counts from when the distance was observed (the newest valid ping's trigger, Sample.dist_t),
+                # not from when the sample was assembled or arrived: a stall after the pings must not make it fresh.
+                measured = min(now, s.t) if s.dist_t is None else min(now, s.t, s.dist_t)
                 self._last_good_t = measured
                 self._last_ok = (s.dist_cm, measured) if s.dist_state == DIST_OK and s.dist_cm is not None else None
             echoes = [c for c in (s.echo_cm, s.dist_cm if s.dist_state == DIST_OK else None) if c is not None]
@@ -725,7 +725,7 @@ class Controller:
         if not self.blocked:
             return
         # A "no reading" sample inside a trusted "nothing there" window counts like far (decision D7).
-        if trusted_none or safety.is_clear_sample(s.dist_state, s.dist_cm, margin, distance_guard):
+        if trusted_none or safety.is_clear_sample(s.dist_state, s.dist_cm, margin, distance_guard, s.echo_cm):
             if self._clear_since is None:
                 self._clear_since = now
             elif now - self._clear_since >= safety.CLEAR_S:

@@ -52,6 +52,9 @@ class SystemClock:
 
 
 class Ultrasonic:
+    timing = "poll"                                # how echoes are timed (EdgeUltrasonic: "edges")
+    stop = None                                    # EdgeUltrasonic: a threading.Event that ends a wait early
+
     def __init__(self, gpio, clock, pin: int = US_PIN):
         self.gpio, self.clock, self.pin = gpio, clock, pin
         self._busy_since: Optional[float] = None   # start of an echo still high at ECHO_STUCK_S (pin left as input)
@@ -62,6 +65,7 @@ class Ultrasonic:
         self.clear_t: Optional[float] = None       # measure(): last ping that heard nothing in range (far / cycle began)
         self.echo_cm: Optional[float] = None       # measure(): closest echo heard
         self.batch_t: Optional[float] = None       # measure(): when its pings began
+        self.meas_t: Optional[float] = None        # measure(): trigger time of the newest valid ping
 
     def ping(self):
         """cm; FAR for an echo ending between 12 and 40 ms; BUSY while the module is in its long no-echo cycle;
@@ -149,13 +153,17 @@ class Ultrasonic:
         lo = max(0.0, clean_high - start) if rise_clean and clean_high is not None else 0.0
         self.lost_echo_cm = min(lo, ECHO_FAR_S) * 34300 / 2
 
+    def close(self) -> None:
+        """Leave the pin an input (never driven)."""
+        self.gpio.setup(self.pin, self.gpio.IN)
+
     def measure(self, n: int):
         """Median of n pings (needs 2 valid when n == 3); BUSY when the module went into its long cycle before
         enough valid pings (later pings would only see it busy); None = no valid ping. With two valid pings the
         lower one counts (median_low): averaging FAR (999) with a real 10 cm echo would report 505 cm."""
         need = 2 if n >= 3 else 1
         vals: list[float] = []
-        self.clear_t = self.echo_cm = None
+        self.clear_t = self.echo_cm = self.meas_t = None
         self.batch_t = self.clock.monotonic()          # no echo heard in this measurement is older than this
         for _ in range(n):
             v = self.ping()
@@ -166,6 +174,7 @@ class Ultrasonic:
                     self.clear_t = self.ping_start
                 return statistics.median_low(vals) if len(vals) >= need else BUSY
             if v is not None:
+                self.meas_t = self.ping_start
                 if v >= FAR:
                     self.clear_t = self.ping_start
                 else:
@@ -181,16 +190,20 @@ class SensorHub:
 
     def __init__(self, bus, gpio, lock, clock, motion: Callable[[], tuple[int, int]],
                  line_enabled: Callable[[], bool] = lambda: False, us_pin: int = US_PIN, motor_lock=None,
-                 light_channels: Callable[[], Sequence[int]] = lambda: DEFAULT_LIGHT_CHANNELS):
+                 light_channels: Callable[[], Sequence[int]] = lambda: DEFAULT_LIGHT_CHANNELS,
+                 ultrasonic: Optional[Ultrasonic] = None,
+                 fallback: Optional[Callable[[], Ultrasonic]] = None):
         self.motor_lock = motor_lock               # outer lock: held across "motors stopped?" and the line probe
         self.bus, self.lock, self.clock, self.motion, self.line_enabled = bus, lock, clock, motion, line_enabled
-        self.us = Ultrasonic(gpio, clock, us_pin)
+        self.us = ultrasonic if ultrasonic is not None else Ultrasonic(gpio, clock, us_pin)
+        self._us_fallback = fallback               # replaces an edge-timed sensor whose module checks keep failing
         self.near_hint_cm = DEFAULT_NEAR_HINT_CM
         self._nones = 0
         self._discard_log_t = clock.monotonic()
         self.clear_t: Optional[float] = None       # this sample's "nothing there" time (D7), see Sample.clear_t
         self.echo_cm: Optional[float] = None       # this sample's closest echo, see Sample.echo_cm
         self.echo_t: Optional[float] = None        # when this sample's pings began, see Sample.echo_t
+        self.dist_t: Optional[float] = None        # trigger time of the newest valid ping, see Sample.dist_t
         self._last_cm: Optional[float] = None     # last "ok" reading; None after far / none = see _last_far
         self._last_far = False
         self.light_ok = False
@@ -224,7 +237,9 @@ class SensorHub:
         self._log_discards()
         self.echo_cm = self.us.echo_cm
         self.echo_t = self.us.batch_t
+        self.dist_t = None if v is None or v is BUSY else self.us.meas_t
         self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
+        self._maybe_fall_back()
         if v is BUSY:
             # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
             # its usual answer: 59-75 % of pings, measured). No reading this sample, but not a fault: it neither
@@ -244,6 +259,20 @@ class SensorHub:
         self._last_cm, self._last_far = v, False
         return v, DIST_OK
 
+    def _maybe_fall_back(self) -> None:
+        """An edge-timed sensor whose module checks keep failing hands over to polling, once its line is free: the
+        polling sensor drives the pin, so never while the module may still be answering."""
+        us = self.us
+        if not getattr(us, "broken", False) or self._us_fallback is None or not us.ready_for_handover():
+            return
+        log.error("ultrasonic: the module keeps failing the edge timing's checks; timing echoes by polling")
+        try:
+            us.close()
+        except Exception:                              # noqa: BLE001
+            pass
+        self.us = self._us_fallback()
+        self._us_fallback = None
+
     def _log_discards(self) -> None:
         now = self.clock.monotonic()
         if now - self._discard_log_t < 60.0:
@@ -253,6 +282,19 @@ class SensorHub:
             log.info("ultrasonic: pings discarded in the last %.0f s: %s", now - self._discard_log_t,
                      " ".join(f"{k} {v}" for k, v in sorted(d.items())))
         d.clear()
+        diag, trig = getattr(self.us, "diag", None), getattr(self.us, "trigger_s", None)
+        if trig:
+            b = sorted(trig)
+            log.info("ultrasonic edges: %d triggers, trigger us p50 %.0f p99 %.0f max %.0f; %s", len(b),
+                     b[len(b) // 2] * 1e6, b[min(len(b) - 1, int(len(b) * 0.99))] * 1e6, b[-1] * 1e6,
+                     " ".join(f"{k} {v}" for k, v in sorted(diag.items())) or "no diagnostics")
+            trig.clear()
+            diag.clear()
+            anomalies = getattr(self.us, "anomalies", None)
+            if anomalies:
+                for a in list(anomalies)[:3]:          # a few examples, in us from the trigger's pull-up
+                    log.info("ultrasonic edges: discarded %s", a)
+                anomalies.clear()
         self._discard_log_t = now
 
     # -- PCF8591 ----------------------------------------------------------------------------------------
@@ -410,4 +452,4 @@ class SensorHub:
         return Sample(t=self.clock.monotonic(), dist_cm=cm, dist_state=state,
                       line_raw=self._read_line(), light_raw=self._read_light(),
                       line_skipped=self.line_skipped, clear_t=self.clear_t, echo_cm=self.echo_cm,
-                      echo_t=self.echo_t)
+                      echo_t=self.echo_t, dist_t=self.dist_t)

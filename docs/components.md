@@ -196,7 +196,8 @@ the stop margin, the guard decision and the clear rule, light and line helpers, 
   `DRIVE_TIMEOUT_S = 5.0`, `REVERSE_RESET_S = 1.0`.
 - `DEFAULT_CONFIG`, `speed_to_duty_pct`, `speed_to_duty`, `duty_to_speed`, `speed_cm_s`, `coast_cm`,
   `margin_cm(stop_cm, speed, cal)`, `effective_speed(direction, speed, speed_limit)`, `guard_decision(...)`,
-  `is_clear_sample(...)`, `brightness`, `brightest`, `line_on`, `line_pos`, `geometry(cal)`, `interp`,
+  `is_clear_sample(...)` (a sample whose pings heard an echo within margin + 5 cm never counts toward releasing
+  `blocked`, whatever its median), `brightness`, `brightest`, `line_on`, `line_pos`, `geometry(cal)`, `interp`,
   `clamp`, `clamp_steer`, `wrap_deg`.
 
 **Configuration.** Calibration tables (`speed_table`, `coast_table`, duty floor and ceiling, light and line
@@ -312,7 +313,10 @@ bodies are buffered at once (a semaphore), and all file work runs in the default
   `app._sd_loop` sends `READY=1` 0.1 s after startup and then `WATCHDOG=1` every 0.5 s.
 
 **Configuration.** The user unit: `Type=notify`, `WatchdogSec=3`, `Restart=always`, `RestartSec=2`,
-`TimeoutStopSec=2`, `ExecStartPre=-` and `ExecStopPost=-/usr/bin/python3 -m picar_server.safe_stop`. The system
+`TimeoutStopSec=2`, `ExecStartPre=-` and `ExecStopPost=-/usr/bin/python3 -m picar_server.safe_stop`. On SIGTERM the
+app's `on_shutdown` stops the car (hold `shutdown`) and closes every WebSocket (1001) first; aiohttp then waits at most
+0.5 s (`shutdown_timeout`) for open requests, so cleanup (backend close) finishes inside the 2 s. Before this, one open
+socket kept the process alive 7.5 s and systemd killed it (2026-11-22). The system
 unit `car-safe-stop.service` runs a root-owned copy (`/usr/local/lib/car-scratch/safe_stop.py`) through
 `safe-stop-wait.sh`, which waits up to about 10 s for `/dev/i2c-1`.
 
@@ -337,7 +341,9 @@ the real sensors, the real car and the dry-run car.
 
 **Interfaces.**
 
-- `base.py`: `Sample(t, dist_cm, dist_state, line_raw, light_raw)`, `DIST_OK/FAR/NONE/FAULT`, `HardwareFault`,
+- `base.py`: `Sample(t, dist_cm, dist_state, line_raw, light_raw, ...)`; also `clear_t`, `echo_cm` and `echo_t`
+  (D7, D8), and `dist_t`, the newest valid ping's trigger time, which the controller's distance freshness counts
+  from. `DIST_OK/FAR/NONE/FAULT`, `HardwareFault`,
   and the `Backend` protocol: `capabilities()`, `start(on_sample)`, `set_motors(left, right) -> bool` (False when
   a forward duty was refused by a latch; raises `HardwareFault` after a failed retry), `set_steering(angle)`,
   `stop_motors() -> bool` (never raises; False = not confirmed), `inhibit_forward()`, `clear_inhibit()`,
@@ -345,14 +351,28 @@ the real sensors, the real car and the dry-run car.
 - `pca9685.py`: `PCA9685(bus, lock)` with `setup()` (60 Hz, prescale 101), `set_pwm(ch, off, timeout)`,
   `set_pwm_retry(ch, off)` (one retry, then `HardwareFault`); `servo_ticks(angle)`; channels `SERVO_CH = 0`,
   `MOTOR_RIGHT_CH = 4`, `MOTOR_LEFT_CH = 5`.
-- `sensors.py`: `Ultrasonic` (GPIO5, `ping()`, `measure(n)`), `SensorHub.read() -> Sample`, `set_near_hint`,
-  `capabilities()`, `probe()`; PCF8591 light at `0x48`, line follower at `0x11`.
+- `sensors.py`: `Ultrasonic` (GPIO5, polling `ping()`, `measure(n)`, `close()`), `SensorHub.read() -> Sample`
+  (takes the ultrasonic object and a polling fallback), `set_near_hint`, `capabilities()`, `probe()`; PCF8591 light
+  at `0x48`, line follower at `0x11`.
+- `ultrasonic_edges.py` (decision D9):
+  - `EdgeUltrasonic(line, clock, pin, stop)`: kernel-timestamped edges, with a pull-up trigger, so the line is
+    never driven. It has the same interface, plus `diag`, `trigger_s` and `second_widths` (logged per minute),
+    `probe()`, and `broken` (switches the hub to polling once the line is free).
+  - `open_edge_ultrasonic()` finds `GPIO5` by name, checks that edges are accepted, and checks that the module
+    answers pull-up triggers.
+  - `select_ultrasonic(mode, ...)` picks the implementation for `--us-timing`.
+- `gpio_cdev.py`: the GPIO character device (uAPI v2) for one line.
+  - `EdgeLine`: `arm()` (both edges, pull-down), `pull_up()`, `input()`, `get()`, `wait(timeout)`, and `events()`
+    returning `Edge(rising, t, seqno)`.
+  - `find_line(name)`, `line_config()`, `parse_events()`.
+  - The layouts are asserted at import against the values from `tools/diag/gpio_abi.c`.
 - `real.py`: `_HardwareBase` (both locks, the forward inhibit and full-stop latches, the sensor thread
   `picar-sensors` every 40 ms, `set_deadline_probe`, `set_latch_callback`) and `RealBackend` (zeroes the motor
   channels before anything else, direction GPIO27 right / GPIO17 left with HIGH = forward, `set_trim`).
 - `dryrun.py`: `DryRunBackend`, real sensors, motors zeroed once at start, motor and servo writes only logged.
 
-**Configuration.** `--hardware`; calibration `steer_trim_deg`, `line_enabled`, `light_channels`, `line_black_high`.
+**Configuration.** `--hardware`, `--us-timing poll|edges|auto` (default `$CAR_SCRATCH_US_TIMING`, else `poll`); calibration `steer_trim_deg`, `line_enabled`,
+`light_channels`, `line_black_high`. Ultrasonic diagnostics for the car: `server/tools/diag/README.md`.
 
 **Tests.** [`test_hal_real.py`](../server/tests/test_hal_real.py) (write order, retries, lock order, deadline
 probe, sensor-thread failures), [`test_hal_sensors.py`](../server/tests/test_hal_sensors.py) (scripted echoes on

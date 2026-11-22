@@ -60,6 +60,8 @@ remember to stop.
 - Hand-over: e-stop persists; config resets to defaults; every acquisition of car control (hello that
   becomes controller, `control take`, `mode` car, a returning lease holder) starts **on hold** (reason
   `control`, or `boot`); the new controller must `resume`.
+- Server shutdown (SIGTERM): the car stops and holds (reason `shutdown`), then every socket is closed with code 1001,
+  before the server waits for open requests (at most 0.5 s).
 
 ## 3. Client → server
 
