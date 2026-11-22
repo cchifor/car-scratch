@@ -351,14 +351,26 @@ the real sensors, the real car and the dry-run car.
 - `pca9685.py`: `PCA9685(bus, lock)` with `setup()` (60 Hz, prescale 101), `set_pwm(ch, off, timeout)`,
   `set_pwm_retry(ch, off)` (one retry, then `HardwareFault`); `servo_ticks(angle)`; channels `SERVO_CH = 0`,
   `MOTOR_RIGHT_CH = 4`, `MOTOR_LEFT_CH = 5`.
-- `sensors.py`: `Ultrasonic` (GPIO5, `ping()`, `measure(n)`), `SensorHub.read() -> Sample`, `set_near_hint`,
-  `capabilities()`, `probe()`; PCF8591 light at `0x48`, line follower at `0x11`.
+- `sensors.py`: `Ultrasonic` (GPIO5, polling `ping()`, `measure(n)`, `close()`), `SensorHub.read() -> Sample`
+  (takes the ultrasonic object and a polling fallback), `set_near_hint`, `capabilities()`, `probe()`; PCF8591 light
+  at `0x48`, line follower at `0x11`.
+- `ultrasonic_edges.py` (decision D9):
+  - `EdgeUltrasonic(line, clock, pin, stop)`: kernel-timestamped edges, with the same interface. It adds `diag`,
+    `blind` and `second_widths`, which are logged per minute, and `broken`, which switches the hub to polling.
+  - `open_edge_ultrasonic()` finds `GPIO5` by name and checks that edges are accepted.
+  - `select_ultrasonic(mode, ...)` picks the implementation for `--us-timing`.
+- `gpio_cdev.py`: the GPIO character device (uAPI v2) for one line.
+  - `EdgeLine`: `output_low()`, `arm()`, `input()`, `set()`, `get()`, `wait(timeout)` and `events()` (`Edge(rising,
+    t, seqno)`).
+  - `find_line(name)`, `line_config()`, `parse_events()`.
+  - The layouts are asserted at import against the values from `tools/diag/gpio_abi.c`.
 - `real.py`: `_HardwareBase` (both locks, the forward inhibit and full-stop latches, the sensor thread
   `picar-sensors` every 40 ms, `set_deadline_probe`, `set_latch_callback`) and `RealBackend` (zeroes the motor
   channels before anything else, direction GPIO27 right / GPIO17 left with HIGH = forward, `set_trim`).
 - `dryrun.py`: `DryRunBackend`, real sensors, motors zeroed once at start, motor and servo writes only logged.
 
-**Configuration.** `--hardware`; calibration `steer_trim_deg`, `line_enabled`, `light_channels`, `line_black_high`.
+**Configuration.** `--hardware`, `--us-timing auto|edges|poll`; calibration `steer_trim_deg`, `line_enabled`,
+`light_channels`, `line_black_high`. Ultrasonic diagnostics for the car: `server/tools/diag/README.md`.
 
 **Tests.** [`test_hal_real.py`](../server/tests/test_hal_real.py) (write order, retries, lock order, deadline
 probe, sensor-thread failures), [`test_hal_sensors.py`](../server/tests/test_hal_sensors.py) (scripted echoes on

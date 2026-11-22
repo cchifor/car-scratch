@@ -206,7 +206,8 @@ Found by the reviews; they are pre-existing.
 | File | Role |
 |---|---|
 | `server/picar_server/hal/gpio_cdev.py` | uAPI v2 wrapper (line lookup, bias, validation, deadlines). |
-| `server/picar_server/hal/sensors.py` | `EdgeUltrasonic`, constants, discard reasons, `meas_t`, `stop`, `SensorHub(ultrasonic=)`, `dist_t`. |
+| `server/picar_server/hal/ultrasonic_edges.py` (as built: its own module) | `EdgeUltrasonic`, constants, discard reasons, selection. |
+| `server/picar_server/hal/sensors.py` | `meas_t`, `close()`, `SensorHub(ultrasonic=, fallback=)`, `dist_t`, per-minute diagnostics. |
 | `server/picar_server/hal/base.py` | `Sample.dist_t`. |
 | `server/picar_server/hal/real.py`, `dryrun.py` | Selection, shutdown order, switch interval. |
 | `server/picar_server/controller.py` | Freshness from `dist_t`; block release with `echo_cm`. |

@@ -27,6 +27,9 @@ Goal: the sensors and the car monitor work, and nothing moves.
 - [ ] Server starts in **dryrun** mode. The welcome message shows the backend as `dryrun`.
 - [ ] Distance reading changes when you move a hand in front of the sensor.
 - [ ] Distance reads `far` when nothing is in range.
+- [ ] `car version` shows `ultrasonic timing edges` (or `poll`, with a warning in `car logs` saying why).
+- [ ] After a minute, `car logs` has an `ultrasonic edges:` line: the blind window p99 under 450 us, and no
+      `early_rise` or `short_pulse`.
 - [ ] Car monitor shows the sensor cone and it changes colour when something is close.
 - [ ] Light readings change when you cover and uncover the light sensors.
 - [ ] Line sensor shows **offline** (expected while the cable is not fixed).
