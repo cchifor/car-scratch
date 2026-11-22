@@ -15,7 +15,8 @@ owner present and with the clear 2 m area (see `docs/safety.md`).
  "speed_table": [[0,0],[25,0],[30,5],[40,15],[50,25],[60,35],[80,55],[100,70]],
  "coast_table": [[0,0],[50,3],[100,12]],
  "wheelbase_cm": 14.0, "ultrasonic_offset_cm": 12.0, "line_sensor_spacing_cm": 2.0,
- "line_threshold": 300, "light_dark": 200, "light_bright": 20}
+ "line_black_high": true, "line_threshold": 320,
+ "light_channels": [0, 1, 2], "light_dark": 200, "light_bright": 20}
 ```
 
 The first time the server starts, it reads an old `~/picar/calibration.json` that only holds
@@ -33,9 +34,11 @@ The first time the server starts, it reads an old `~/picar/calibration.json` tha
 | `wheelbase_cm` | Distance between the front and rear axles. Used for turning geometry. | cm | Tape measure, axle centre to axle centre |
 | `ultrasonic_offset_cm` | Distance from the car's pose point (the rear axle) to the ultrasonic sensor. **Reserved, not used yet:** the server draws and simulates the sensor at a fixed 22 cm (`ultrasonic_x` in `safety.geometry()`). | cm | Tape measure |
 | `line_sensor_spacing_cm` | Distance between two neighbouring line sensors. | cm | Tape measure, centre to centre |
-| `line_threshold` | A line sensor "sees the line" when its raw reading is **below** this value. | raw value | Line test (below) |
-| `light_dark` | Raw light reading in darkness. | raw value, 0–255 | Cover the light sensor |
-| `light_bright` | Raw light reading next to a bright lamp. | raw value, 0–255 | Point the sensor at a lamp at about 30 cm |
+| `line_black_high` | `true` when a black line reads a HIGH value (measured on this car). | true or false | Line procedure (below) |
+| `line_threshold` | The raw value that separates "line" from "ground". With `line_black_high`, a sensor sees the line when its raw value is **above** this value; otherwise when it is **below**. One number for all five sensors, or a list of 5 (leftmost first). | raw value, 0–1023 | Line procedure (below) |
+| `light_channels` | Which PCF8591 input (0 to 3) each light sensor is wired to, as `[left, middle, right]`. This car: `[3, 2, 1]`. | 3 distinct integers | Light procedure (below) |
+| `light_dark` | Raw light reading in the room (the "dark" end). One number, or a list of 3 (left, middle, right). | raw value, 0–255 | Light procedure (below) |
+| `light_bright` | Raw light reading with a torch on the sensor. One number, or a list of 3. | raw value, 0–255 | Light procedure (below) |
 
 Notes:
 
@@ -43,7 +46,33 @@ Notes:
   `duty % = floor + (ceiling − floor) × speed / 100`, and sends `round(4095 × duty % / 100)` to the motor
   driver.
 - For light, **a lower raw value means more light** on this sensor. The brightness shown in the monitor
-  is `100 × (light_dark − raw) / (light_dark − light_bright)`, limited to 0–100.
+  is `100 × (light_dark − raw) / (light_dark − light_bright)`, limited to 0–100, using the values of that
+  sensor. Telemetry and blocks always give left, middle, right, whatever the wiring.
+- Old calibration files with one number for `light_dark`, `light_bright` and `line_threshold` still load.
+
+## Measured on the sensors (2026-11-21)
+
+- **Light (PCF8591 at I2C-1 0x48).** With a torch on one sensor at a time: left = input 3, middle = input 2,
+  right = input 1. Input 0 is a light sensor on the converter board itself: it sees room light (about 85-92)
+  and also reacts to a torch held near the left or right sensor, which made the first measurements look
+  inconsistent; it is not used. Lower raw = brighter. Room light: left, middle and right about 252, 250 and
+  252; torch on the sensor: about 13, 19 and 19. Saved on the car: `light_channels` `[3, 2, 1]`,
+  `light_dark` `[252, 250, 252]`, `light_bright` `[13, 19, 19]`; with them all three read 0 % in room light
+  and about 100 % with the torch on that sensor, and the brightest direction follows the torch.
+- **Line follower (I2C-1 0x11).** Five 16-bit values, sensor 1 is the leftmost. A read takes about 2.9 ms
+  (3.0 ms at most over 40 reads) with no bus error. About 1 % of frames are all 0xFF (65535 in every slot);
+  the server treats a frame with any value above 1023 as invalid and reads again. White or reflective close to
+  the sensor reads LOW (about 170–300); black, or nothing in range, reads HIGH (about 420–425). At first the
+  module saw nothing at its mounted height (white paper read about 423, like empty space); after the owner fixed
+  its power and height, white reads 102-125.
+- **Line follower, calibrated (2026-11-21).** On white paper the five sensors read 125, 119, 110, 102 and 116;
+  over the line (glossy black tape) 14, 17, 15, 13 and 16. Glossy tape mirrors the IR light back, so on this
+  line the reading DROPS (matte black or empty space would read high instead): which way it goes depends on the
+  line material, which is why it is a setting and the guided procedure detects it. Sliding the line from left
+  to right lit the sensors in order 1 to 5. Saved on the car: `line_black_high` `false`, `line_threshold`
+  `[70, 68, 62, 58, 66]` (midway between white and line), `line_enabled` `true`. Checked: on white all five
+  off; line under the middle sensor gives `on` `[F, F, T, F, F]` and position 0; under the left one,
+  `[T, F, F, F, F]` and position -2.
 
 ## How to measure
 
@@ -100,35 +129,69 @@ The server does not read this field yet: the geometry it sends to the editor and
 fixed `ultrasonic_x` of 22 cm (`safety.geometry()` in `server/picar_server/safety.py`). Record the value anyway,
 so it is ready when the field is wired in.
 
-### 6. Line sensors (after the line follower cable is fixed)
+### 6. Line sensors
 
-1. Measure the centre-to-centre distance between two neighbouring sensors.
-2. Enter it in `line_sensor_spacing_cm`.
-3. Hold the car over the **white floor** and note the `line.raw` value for each sensor from the monitor
-   (or the sensor block). Write them down.
-4. Put a sensor over the **black line** and note the raw value.
-5. Set `line_threshold` halfway between the white and black readings. A sensor sees the line when its raw
-   value is below the threshold.
+The line follower must be enabled (`"line_enabled": true` in calibration.json, then restart the service) and
+mounted low enough that white paper and a black line read clearly different values.
 
-Until the cable is fixed, the line sensor reports offline. Leave these fields at their defaults.
+1. Measure the centre-to-centre distance between two neighbouring sensors and enter it in
+   `line_sensor_spacing_cm`.
+2. Guided, from a laptop that can reach the car (no motion is ever sent; the car stays where you put it):
+   `python3 -m tools.calib --url ws://picar.local:8080/ws line`
+   - Put the car on plain white paper at driving height; Enter. It takes the median of each sensor over about
+     2 seconds.
+   - Slide a black line slowly under all five sensors by hand, then press Enter. It records each sensor's
+     extreme reading.
+   - It works out the polarity (`line_black_high`) and a threshold per sensor, halfway between white and
+     black, prints them and saves them on the car at once.
+   - If any sensor's white and black readings differ by less than 40 counts it refuses to save and prints
+     "sensor too far from the ground or IR LEDs not powered". Lower the module or check its supply and retry.
+3. By hand instead: note the `line.raw` values on white and on black, set `line_black_high` and put
+   `line_threshold` halfway (one number, or a list of 5), then restart or use `calibrate`.
 
 ### 7. Light sensors
 
-1. Cover all three light sensors with your hand or a dark card. Note the raw values. Set `light_dark`
-   to the average.
-2. Point the car at a lamp about 30 cm away, in a dim room, so the sensor reads its brightest
-   value. Note the raw values. Set `light_bright` to the lowest (brightest) average.
-3. Check the monitor: moving the lamp should move the brightness bars and the arrow to the brightest
-   sensor.
+Guided: `python3 -m tools.calib --url ws://picar.local:8080/ws light` (no motion is ever sent).
+
+1. Room light as normal, nothing shining on the sensors; Enter. It takes about 2 seconds of readings.
+2. Hold a torch close on the LEFT sensor, Enter; then the MIDDLE sensor; then the RIGHT sensor. For each it
+   notes which input dropped.
+3. It works out `light_channels` (which input is which sensor), `light_dark` (the room reading of each sensor)
+   and `light_bright` (the torch reading of each sensor), prints them and saves them on the car at once. It
+   refuses to save if a torch changed no input by at least 30, or if two sensors map to the same input.
+
+If the procedure stops without saving (a refusal, Ctrl-C, a lost connection), it puts the car's previous
+`light_channels` back.
+
+The car reads three inputs at a time, so each step samples all four inputs under two temporary input maps.
+On this car run it with `--ignore-inputs 0`: input 0 is the converter board's own light sensor, and torch
+light spilling onto it could otherwise be taken for the left or right sensor. Afterwards the monitor should show the brightness bar of the sensor you
+light, and the arrow should point to it.
 
 ## After you change the file
 
 - Save the file, or use `calibrate` with `save` from a controller client.
 - Restart the car service so the new values load: `systemctl --user restart car-scratch` on the car, or a
   deploy (which restarts it). The server reads `calibration.json` only once, when it starts; reconnecting the
-  browser does not reload it. The one exception is `calibrate` with `steer_trim_deg`, which applies the new
-  trim at once.
+  browser does not reload it. The exception is `calibrate`: `steer_trim_deg`, `light_channels`, `light_dark`, `light_bright`,
+  `line_black_high` and `line_threshold` apply at once (with `save` they are also written to the file;
+  `line_enabled` is not part of `calibrate`).
 - Repeat the Stage 2 floor test (in `docs/on-car-checklist.md`) to confirm the changes.
+
+## The saved copy in the repo
+
+[`deploy/calibration/picar.json`](../deploy/calibration/picar.json) is this car's `calibration.json`, copied from
+the car after the 2026-11-21 calibration (speed table, turning, trim, light and line sensors). The car's own file
+stays the one in use: a deploy never overwrites it, because `calibrate ... save` changes it on the car. The copy
+is there to restore the car after an SD card change, or to compare with later:
+
+```
+scp deploy/calibration/picar.json c4@picar.local:.config/car-scratch/calibration.json
+ssh c4@picar.local systemctl --user restart car-scratch
+```
+
+After a recalibration, copy the car's file back over it and commit it:
+`scp c4@picar.local:.config/car-scratch/calibration.json deploy/calibration/picar.json`.
 
 ## Measured on the car (2026-11-21, fresh batteries)
 

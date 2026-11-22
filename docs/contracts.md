@@ -43,6 +43,7 @@ class Sample:
     dist_cm: float | None        # None unless dist_state == "ok"; measured from the sensor face
     dist_state: str              # "ok" | "far" | "none" (no echo this sample) | "fault" (3 consecutive "none")
     line_raw: list[int] | None   # 5 values (sensor 1 = leftmost) or None when the module is absent
+    line_skipped: bool           # line_raw is None only because one frame was invalid (module still healthy)
     light_raw: list[int] | None  # 3 values 0..255 (left, middle, right) or None
 
 class Backend(Protocol):
@@ -93,8 +94,10 @@ Threading rules (real/dry-run):
 - The sensor thread calls `sys.setswitchinterval(0.0005)` at start (GIL jitter otherwise lengthens echo
   timing), uses median-of-3 always while the motion snapshot is forward, and discards a ping whose busy-wait
   loop saw a gap > 1 ms between iterations.
-- The line follower is **never probed while the motors run**; `line_enabled` defaults to false (§3)
-  until its cable is fixed.
+- The line follower is probed with a back-off while stopped, and read **while the car moves** only under the
+  guards of decision D4 (`docs/decisions.md`): `line_enabled`, a healthy module (10 good reads in a row since its
+  last failure), only the I2C bus lock (never the motor lock), and a switch-off until the next stop after an
+  error, two invalid frames in a row or a bus call over 15 ms. `line_enabled` defaults to false (§3).
 
 Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
 
@@ -109,9 +112,15 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
   Echo still high at 40 ms → no answer (stuck line — never treated as `far`).
   Median of 3 pings when the last reading was < the near hint or the car moves forward; else 1 ping.
   A sample with no valid ping → `none`; 3 consecutive `none` samples → `fault`.
-- PCF8591: for ch in 0..2: `write_byte(0x48, 0x40|ch)`, discard one read, then read.
-- Line follower: `read_i2c_block_data(0x11, 0, 10)` → 5 big-endian 16-bit values. On error: report
-  `None`, re-probe with backoff 2 s → 10 s, log only state changes.
+- PCF8591: for each input `ch` in `light_channels` (left, middle, right; default 0, 1, 2):
+  `write_byte(0x48, 0x40|ch)`, discard one read, then read. `light_raw` is ordered left, middle, right.
+- Line follower: `read_i2c_block_data(0x11, 0, 10)` → 5 big-endian 16-bit values. A frame with any value
+  above 1023 (the module sometimes answers all 0xFF, about 1 % of frames) is invalid and is read once more at
+  once (never after a bus call that took over 15 ms); if that is invalid too the sample is skipped (`line_raw` is `None` for that sample, the module is not
+  marked absent). 3 consecutive skipped samples, or an I2C error, mark it absent: re-probe with backoff
+  2 s → 10 s, log only state changes. The controller reports a line `sensor_fault` only after 3 samples in a row
+  without a frame and repeats the last frame in telemetry for 0.1 s, and only for a single skipped frame (`Sample.line_skipped`), never for
+  a suppressed or absent module.
 - `safe_stop.py`: standalone (no aiohttp import), zeroes ch4/ch5, exits 0 even if the chip is missing.
 - dryrun backend: real sensors, motor/servo writes only logged.
 
@@ -124,20 +133,26 @@ Real backend (measured hardware, see `server/legacy/obstacle_stop.py`):
  "speed_table": [[0,0],[25,0],[30,5],[40,15],[50,25],[60,35],[80,55],[100,70]],
  "coast_table": [[0,0],[50,3],[100,12]],
  "wheelbase_cm": 14.0, "ultrasonic_offset_cm": 12.0, "line_sensor_spacing_cm": 2.0,
- "line_threshold": 300, "light_dark": 200, "light_bright": 20}
+ "line_black_high": true, "line_threshold": 320,
+ "light_channels": [0, 1, 2], "light_dark": 200, "light_bright": 20}
 ```
+
+`light_dark`, `light_bright` take one number or a list of 3 (left, middle, right); `line_threshold` one number or a
+list of 5 (leftmost first); `light_channels` is a permutation of 3 distinct PCF8591 inputs 0..3. An old file with
+only the scalar values still loads (an invalid value is ignored with a warning and the default is used).
 
 - User speed 0..100 → duty %: `0` if speed is 0, else `floor + (ceiling − floor) × speed / 100`;
   duty value = `round(4095 × duty% / 100)`.
 - `speed_table`: duty % → cm/s (dead reckoning, margin). `coast_table`: user speed → cm rolled after stop.
-- Light: `bright = clamp(100 × (light_dark − raw) / (light_dark − light_bright), 0, 100)`
-  (on this module a lower raw value means more light; confirm on the car).
-- Line: sensor sees line when `raw < line_threshold`.
+- Light: `bright = clamp(100 × (light_dark − raw) / (light_dark − light_bright), 0, 100)`, with the dark and
+  bright values of that sensor (a lower raw value means more light; measured).
+- Line: with `line_black_high` (default; measured) a sensor sees the line when `raw > threshold`, otherwise when
+  `raw < threshold`; the threshold is that sensor's own when `line_threshold` is a list.
 - Legacy `~/picar/calibration.json` `{"steer_trim_deg": x}` is migrated on first start.
 - `ultrasonic_offset_cm` is reserved and **not used yet**: `safety.geometry()` sends a fixed `ultrasonic_x: 22`
   (section 4), which the simulator and the Car Monitor use.
-- The file is read once, when the server starts; only `calibrate` changes a value (the steering trim) while it
-  runs.
+- The file is read once, when the server starts; only `calibrate` changes values while it runs (the steering
+  trim and the light and line keys above).
 
 ## 4. Simulator worlds (`server/picar_server/hal/sim/worlds/<id>.json`)
 

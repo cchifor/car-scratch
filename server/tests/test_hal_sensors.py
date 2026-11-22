@@ -155,23 +155,11 @@ def test_line_follower_disabled_by_default_is_never_probed():
 def test_line_follower_decodes_big_endian_pairs():
     b, bus, gpio, _ = make({"line_enabled": True})
     gpio.default = gpio.echo_cm(100)
-    bus.line_bytes = [0x01, 0x2C, 0, 5, 0, 0, 0xFF, 0xFF, 0, 1]
+    bus.line_bytes = [0x01, 0x2C, 0, 5, 0, 0, 0x03, 0xFF, 0, 1]
     s = b.hub.read()
-    assert s.line_raw == [300, 5, 0, 65535, 1]
+    assert s.line_raw == [300, 5, 0, 1023, 1]
     assert b.capabilities()["line"] is True
     assert ("rblk", 0x11, 0, 10) in bus.ops
-
-
-def test_line_follower_not_read_while_motors_run():
-    b, bus, gpio, _ = make({"line_enabled": True})
-    gpio.default = gpio.echo_cm(100)
-    bus.line_bytes = [0, 1] * 5
-    b.set_motors(-500, -500)                             # any motion, even backward
-    bus.ops.clear()
-    s = b.hub.read()
-    assert s.line_raw is None and not any(o[0] == "rblk" for o in bus.ops)
-    b.stop_motors()
-    assert b.hub.read().line_raw == [1] * 5
 
 
 def test_line_follower_absent_backoff_2s_then_10s_and_logs_state_changes_only(caplog):

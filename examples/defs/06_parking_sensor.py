@@ -12,6 +12,7 @@ def build():
     p.var("gap", 100)
     car.script(
         -200, 60, when_flag(),
+        steer("straight"),
         stop_distance(15),
         say("Beep beep... closer means faster!"),
         drive("forward", 25),

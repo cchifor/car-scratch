@@ -12,7 +12,7 @@ from typing import Callable, Optional
 
 from .base import DUTY_MAX, STEER_MAX_DEG, HardwareFault, OnSample
 from .pca9685 import MOTOR_LEFT_CH, MOTOR_RIGHT_CH, SERVO_CH, PCA9685, servo_ticks
-from .sensors import SensorHub, SystemClock
+from .sensors import DEFAULT_LIGHT_CHANNELS, SensorHub, SystemClock
 
 log = logging.getLogger("picar.hal")
 
@@ -62,7 +62,8 @@ class _HardwareBase:
         self.bus, self.gpio = bus, gpio
         self.pca = PCA9685(bus, self.lock, sleep=self.clock.sleep)
         self.hub = SensorHub(bus, gpio, self.lock, self.clock, self.motion,
-                             lambda: bool(self.cal.get("line_enabled", False)), motor_lock=self._motor_lock)
+                             lambda: bool(self.cal.get("line_enabled", False)), motor_lock=self._motor_lock,
+                             light_channels=lambda: self.cal.get("light_channels", DEFAULT_LIGHT_CHANNELS))
 
     # -- hooks ------------------------------------------------------------------------------------------
     def _write_motors(self, left: int, right: int) -> None:

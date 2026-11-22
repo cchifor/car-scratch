@@ -28,7 +28,7 @@ Both reviewers independently flagged the same blockers; all were accepted into c
 | Host/Origin | Host allow-list (DNS rebinding) + `--allow-origin` for dev | reviewer B |
 | Pi hang / reboot | `pi-setup.sh` enables the hardware watchdog and an early-boot system `safe_stop` unit | reviewer B (reviewer A: needs an independent cutoff) |
 | GIL jitter in ultrasonic | `sys.setswitchinterval(0.0005)`, discard pings with > 1 ms loop gaps | reviewer B |
-| Line follower bus risk | Never probed while motors run; `line_enabled` defaults false | reviewer B |
+| Line follower bus risk | Never probed while motors run; `line_enabled` defaults false (the first part is superseded by D4) | reviewer B |
 | Speed cap until calibrated | **Rejected** (owner removed the speed cap); UI shows "not calibrated" banner instead | reviewer B proposed, owner decision kept |
 | Touch remote | Short timed nudges per tap (no open-ended drive from a tap) | reviewer A |
 | iPad viewport forcing | Dropped (shrinks touch targets); responsive layout only | both |
@@ -60,3 +60,46 @@ examples have multiple sprites; a stored choice always wins.
 | Rotate overlay / hw_fault | E-STOP inside the rotate overlay; persistent hardware-fault banner with Reset | reviewer A |
 | Trademarked characters | Scratch characters filtered out of the sprite/costume libraries; time-travel logos removed; own favicon | both |
 | Product name | "Car Scratch" kept (owner decision); both reviewers note the Scratch TRADEMARK file restricts using the name to promote derivatives — owner to revisit before any public release | owner |
+
+## D4 — Line follower read while moving (2026-11-21)
+
+**Context.** D1 said the line follower is never read while the motors run. That was decided when the module did
+not answer at all, and a slave that hangs the bus could hold the shared I2C lock and delay a motor stop. A line
+follower that is only read at standstill cannot follow a line, which is what it is for.
+
+**Measured on the car (2026-11-21).**
+
+- A read (`read_i2c_block_data(0x11, 0, 10)`) takes about 2.9 ms; the maximum over 40 reads was 3.0 ms. No bus
+  error was seen. About 1 % of frames come back as all 0xFF (65535 in every slot): those are invalid.
+- Polarity: white or reflective close to the sensor reads LOW (about 170 to 300); black, or nothing in range,
+  reads HIGH (about 420 to 425). A black line therefore reads HIGH, the opposite of what the first code assumed.
+- A non-answering device is NACKed at once; the risk is a slave that stalls, not one that is missing.
+
+**Decision.** The line follower is read while the car moves, only when all of these hold:
+
+1. `line_enabled` is true and the module is present.
+2. It has answered well: 10 good reads in a row since its last failure (a failure is an I2C error, or a frame
+   that was invalid after the immediate retry).
+3. The read takes only the I2C bus lock (like the light read), never the motor lock. A motor write or stop still
+   waits for the bus lock while the sensor thread holds it; the lock gives no priority to waiters, so the wait can
+   span the line read, its one retry and the light read (about 10 ms with a healthy module; see the residual risk
+   below for a stalled bus).
+
+Moving reads are switched off, with one WARNING in the log, until the car has been stopped when a moving read
+raises an error, returns an invalid frame twice in a row, or takes more than 15 ms (measured with a monotonic
+clock around the bus call). Telemetry then shows `line.ok: false` (telemetry repeats the last frame for 0.1 s, and only across a single skipped frame) and
+the controller reports a line `sensor_fault` event after 3 samples without a frame. After the stop the module
+must answer 10 times in a row again before moving reads resume. The stopped behaviour is unchanged (probe with
+a 2 s to 10 s back-off while absent).
+
+An invalid frame is retried once at once, except after a bus call over 15 ms (a stalling module holds the bus lock
+once, then moving reads stop). At standstill a slow read does not count as a good read. A frame still invalid is a skipped sample and does not mark the module
+absent. Three skipped samples in a row, or an I2C error, do.
+
+**Residual risk (measured worst case).** A healthy line read adds about 3 ms, and up to about 10 ms with a retry
+plus the light read, before the obstacle guard and before a loop-thread stop gets the bus lock. A stalled bus
+blocks any motor write; the PCF8591 light read has always shared this. The wait is bounded by the I2C adapter
+timeout and by the existing layers behind it (the `hw_fault` latch when the motor lock times out, and the
+systemd and hardware watchdogs). A slow call is never retried and switches moving reads off, so the line
+follower adds at most one stalled call before it is off for that drive. The owner can turn the feature off with
+`line_enabled: false`.

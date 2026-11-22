@@ -26,6 +26,7 @@ class Sample:
     dist_state: str                       # DIST_OK | DIST_FAR | DIST_NONE | DIST_FAULT
     line_raw: Optional[list[int]] = None  # 5 values, sensor 1 = leftmost; None when the module is absent
     light_raw: Optional[list[int]] = None  # 3 values 0..255 (left, middle, right); None when absent
+    line_skipped: bool = False            # line_raw is None only because one frame was invalid (the module is still healthy)
 
 
 OnSample = Callable[[Sample], None]

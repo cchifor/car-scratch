@@ -87,7 +87,20 @@ remember to stop.
 | `resume` | – | `ack` | clears **hold** (sent only by the Resume button and the green flag) |
 | `reset_pose` | – | `ack` | dead-reckoned pose back to `(0, 0, 90)`; in sim: back to the world start |
 | `world` | `world:str` (world id; `id` is the command id) | `ack` + `world` | sim mode only |
-| `calibrate` | `steer_trim_deg?:float(-20..20)`, `save?:bool` | `ack` | car controller only; `save` persists to calibration.json |
+| `calibrate` | `steer_trim_deg?:float(-20..20)`, `light_channels?:[int,int,int]`, `light_dark?`, `light_bright?`, `line_black_high?:bool`, `line_threshold?`, `save?:bool` | `ack` (the applied values) | car controller only; every field is optional, validated and applied at once; `save` persists the whole calibration to calibration.json (see below) |
+
+The ack of `calibrate` carries `previous`: the values the light and line keys had before this command, so a client can put them back. If `save` fails, those keys are reverted too.
+Simulator sessions ignore the car's light and line calibration and use the defaults (the simulator emits idealised readings); they keep its other keys.
+
+`calibrate` fields (a wrong shape is an `err` `bad_request`, nothing is applied):
+
+- `light_channels`: the PCF8591 input (0..3) of the [left, middle, right] light sensor; three distinct integers.
+- `light_dark`, `light_bright`: raw light value in darkness and next to a lamp (0..255), either one number for
+  all three sensors or a list of 3 numbers (left, middle, right).
+- `line_black_high`: boolean; true when a black line reads HIGH (the measured behaviour of this module).
+- `line_threshold`: raw line value (0..1023), one number or a list of 5 (leftmost first). With
+  `line_black_high` a sensor sees the line when `raw > threshold`, otherwise when `raw < threshold`.
+- `light.raw` in telemetry is always ordered left, middle, right, whatever `light_channels` says.
 
 Every `cmd` gets **exactly one** reply: `ack` (with the effective values, e.g. `speed` after limits and
 clamping) or `err` with the same `id`. Out-of-range numbers are **clamped**, not rejected; `drive`/`move`

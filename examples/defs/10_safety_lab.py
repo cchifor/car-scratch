@@ -10,6 +10,7 @@ def build():
     p, car = new_project("Safety lab: press space for emergency stop", car_x=-100)
     car.script(
         -200, 60, when_flag(),
+        steer("straight"),
         speed_limit(40),
         stop_distance(30),
         say("Speed limit 40, stop distance 30."),

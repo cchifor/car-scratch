@@ -54,10 +54,12 @@ class FakeBus:
         self.missing: set[int] = set()                  # addresses that answer with OSError
         self.fail_writes = 0                            # next N write_byte_data calls raise OSError
         self.fail_all_writes = False
-        self.pcf_values = [10, 20, 30]
+        self.pcf_values = [10, 20, 30, 40]
         self._pcf_ch = 0
         self._pcf_fresh = False
         self.line_bytes: list[int] | None = None        # None = absent (OSError)
+        self.line_script: deque = deque()               # per read: a byte list, or None = OSError (before line_bytes)
+        self.on_line_read = None                        # optional callback() at the start of each line block read
         self.closed = False
         self.on_write = None                            # optional callback(addr, reg, val) before each write
 
@@ -97,6 +99,13 @@ class FakeBus:
     def read_i2c_block_data(self, addr, reg, length):
         self._check(addr)
         self.ops.append(("rblk", addr, reg, length))
+        if self.on_line_read:
+            self.on_line_read()
+        if self.line_script:
+            item = self.line_script.popleft()
+            if item is None:
+                raise OSError(121, "Remote I/O error")
+            return list(item)
         if self.line_bytes is None:
             raise OSError(121, "Remote I/O error")
         return list(self.line_bytes)

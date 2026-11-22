@@ -223,7 +223,7 @@ atomic saving. How to measure the values: [calibration.md](calibration.md).
 **Interfaces.** `DEFAULT_CALIBRATION`, `merge(raw)` (defaults overlaid with valid entries; unknown keys dropped;
 tables must be at least two `[x, y]` pairs sorted by x; a ceiling at or below the floor resets both),
 `load_calibration(config_dir, legacy_path)`, `save_calibration(config_dir, cal)` (temp file, fsync,
-`os.replace`). The `calibrate` command (`steer_trim_deg`, `save`) changes the trim live and, with `save`, writes
+`os.replace`). The `calibrate` command (`steer_trim_deg`, the light and line keys, `save`) changes them live and, with `save`, writes
 the whole calibration.
 
 **Configuration.** Fields and defaults are listed in [contracts.md](contracts.md) section 3. The car's file
@@ -352,7 +352,7 @@ the real sensors, the real car and the dry-run car.
   channels before anything else, direction GPIO27 right / GPIO17 left with HIGH = forward, `set_trim`).
 - `dryrun.py`: `DryRunBackend`, real sensors, motors zeroed once at start, motor and servo writes only logged.
 
-**Configuration.** `--hardware`; calibration `steer_trim_deg` and `line_enabled`.
+**Configuration.** `--hardware`; calibration `steer_trim_deg`, `line_enabled`, `light_channels`, `line_black_high`.
 
 **Tests.** [`test_hal_real.py`](../server/tests/test_hal_real.py) (write order, retries, lock order, deadline
 probe, sensor-thread failures), [`test_hal_sensors.py`](../server/tests/test_hal_sensors.py) (scripted echoes on
@@ -366,8 +366,12 @@ neither.
 - An echo is `far` only when it ends between 12 and 40 ms; still high at 40 ms is "no answer". A ping whose
   busy-wait loop saw a gap over 1 ms is discarded. Walls hit at an angle can read `far` (see
   [safety.md](safety.md)).
-- The line follower is off by default (`line_enabled: false`) until its cable is fixed, and is never probed while
-  the motors run.
+- The line follower is off by default (`line_enabled: false`). While the car moves it is read only when the module
+  has answered 10 times in a row, and the reads stay off until the next stop after an error, two invalid frames or
+  a slow (> 15 ms) bus call (decision D4). A moving read takes only the I2C bus lock, never the motor lock.
+- A line frame with any value above 1023 is invalid (the module answers all 0xFF about 1 % of the time); it is
+  retried once (not after a slow call), then the sample is skipped.
+- `light_raw` follows `light_channels` (left, middle, right); the sensor thread reads the calibration live.
 - `sys.setswitchinterval(0.0005)` is process-wide while the sensor thread runs.
 
 ## Simulator
@@ -412,7 +416,9 @@ installed:
   (`--url` defaults to `ws://picar.local:8080/ws`). `status`, `watch` and `estop` connect as viewers;
   `drive`/`move` send `resume` first; Ctrl-C while driving sends `stop`.
 - `python3 -m tools.calib [--url URL] trim` (type a trim, `s` saves it to `calibration.json`) and
-  `calib speed [--speeds 30,40,...] [--ms 1500] [--floor 25] [--ceiling 100]` (prints `speed_table` entries).
+  `calib speed [--speeds 30,40,...] [--ms 1500] [--floor 25] [--ceiling 100]` (prints `speed_table` entries),
+  `calib light [--seconds 2]` and `calib line [--seconds 2]` (guided; they read telemetry, send `calibrate` and
+  never send a motion command; see [calibration.md](calibration.md)).
 
 **Tests.** [`test_hal_tools.py`](../server/tests/test_hal_tools.py) (against a tiny fake server).
 
