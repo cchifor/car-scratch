@@ -437,7 +437,19 @@ server):**
 - The two runs before it (the 10 µs sleep, then the GIL release) discarded 2–4 % and 1–2.5 %: that is how the rise
   timing and the interpreter-lock issue were found.
 
-**Still to do before edges become the default:** a drive test with the owner, each motion step announced first.
-The noise counters (`found_high`, `pre_trigger`, `tail_edges`) are pass criteria, with the motors running.
+**Drive test with the owner, done (2026-11-22, `fc51ef3`, edges on). The owner's verdict: it works.**
+
+- Two obstacle stops (readings 11.1 cm and 21.6 cm), and no ultrasonic `sensor_fault`.
+- The noise counters (`found_high`, `pre_trigger`, `tail_edges`) stayed at 0 with the motors running.
+- **The minute near the wall with the motors running** discarded 74 of 2520 pings, then 2 the next minute:
+  - 48 were `trigger_window`: 3–4 edges inside our own ~0.1 ms trigger window, with no module edge there. This
+    looks like the weakly pulled line chattering as it crosses the threshold while the motors run.
+  - 26 were `no_rise`.
+  - All are safe-direction discards, each a possible echo that counts as an obstacle.
+
+**Next.**
+1. Make the trigger-window check tolerant of that chatter. No module edge can fall in the window: the module rises
+   ≥ 0.40 ms after the pull-up, and the window ends by 0.38 ms. Then confirm it on a longer drive.
+2. Switch the code default from `poll` to `auto`. Until then, the car runs edges through its unit drop-in.
 
 Then switch the default and record the results here.
