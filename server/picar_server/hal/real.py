@@ -235,6 +235,12 @@ class _HardwareBase:
         except Exception:                              # noqa: BLE001
             pass
 
+    def _release_ultrasonic(self) -> None:
+        try:
+            self.hub.us.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     # -- steering helpers -------------------------------------------------------------------------------
     def _trim(self) -> float:
         return float(self.cal.get("steer_trim_deg", 0.0) or 0.0)
@@ -252,13 +258,17 @@ class RealBackend(_HardwareBase):
         super().__init__(calibration, bus, gpio, clock, us_timing=us_timing, open_edges=open_edges)
         self._angle = 0.0
         self._dir = {"left": False, "right": False}    # direction pin level (True = HIGH); pins start LOW
-        # Motors first: zero both channels before anything else can leave them running.
-        self._zero_pwm()
-        for pin in (DIR_RIGHT_GPIO, DIR_LEFT_GPIO):
-            self.gpio.setup(pin, self.gpio.OUT, initial=self.gpio.LOW)
-        self.pca.setup()                                # 60 Hz; also switches every channel off
-        self._zero_pwm()
-        self.set_steering(0.0)
+        try:
+            # Motors first: zero both channels before anything else can leave them running.
+            self._zero_pwm()
+            for pin in (DIR_RIGHT_GPIO, DIR_LEFT_GPIO):
+                self.gpio.setup(pin, self.gpio.OUT, initial=self.gpio.LOW)
+            self.pca.setup()                            # 60 Hz; also switches every channel off
+            self._zero_pwm()
+            self.set_steering(0.0)
+        except BaseException:
+            self._release_ultrasonic()                  # the edge line is an exclusive request: never leak it
+            raise
 
     def _zero_pwm(self) -> None:
         """Both channels are attempted (each with retries) before a failure is reported."""

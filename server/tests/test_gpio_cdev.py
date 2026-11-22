@@ -92,7 +92,8 @@ HEADER = {
     "event": dict(id=8, offset=12, line_seqno=20),
     "ioctl": dict(get_line=0xC250B407, set_config=0xC110B40D, get_values=0xC010B40E, set_values=0xC010B40F,
                   get_lineinfo=0xC100B405, chipinfo=0x8044B401),
-    "flags": dict(input=0x4, output=0x8, rising=0x10, falling=0x20, bias_disabled=0x400),
+    "flags": dict(input=0x4, output=0x8, rising=0x10, falling=0x20, bias_disabled=0x400, pull_up=0x100,
+                  pull_down=0x200),
 }
 
 
@@ -105,8 +106,8 @@ def test_constants_match_the_kernel_header():
     assert (cd._CFG_HEAD.size, cd._CFG_ATTR.size) == (h["config"]["attrs"], h["config"]["attr_size"])
     assert (cd.GET_LINE_IOCTL, cd.SET_CONFIG_IOCTL, cd.GET_VALUES_IOCTL, cd.SET_VALUES_IOCTL, cd.GET_LINEINFO_IOCTL,
             cd.GET_CHIPINFO_IOCTL) == tuple(h["ioctl"].values())
-    assert (cd.FLAG_INPUT, cd.FLAG_OUTPUT, cd.FLAG_EDGE_RISING, cd.FLAG_EDGE_FALLING, cd.FLAG_BIAS_DISABLED) == \
-        tuple(h["flags"].values())
+    assert (cd.FLAG_INPUT, cd.FLAG_OUTPUT, cd.FLAG_EDGE_RISING, cd.FLAG_EDGE_FALLING, cd.FLAG_BIAS_DISABLED,
+            cd.FLAG_BIAS_PULL_UP, cd.FLAG_BIAS_PULL_DOWN) == tuple(h["flags"].values())
     ev = cd.EVENT.pack(1, 2, 3, 4, 5)
     assert struct.unpack_from("<I", ev, h["event"]["id"])[0] == 2
     assert struct.unpack_from("<I", ev, h["event"]["offset"])[0] == 3

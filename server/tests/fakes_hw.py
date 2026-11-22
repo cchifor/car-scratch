@@ -224,6 +224,11 @@ class FakeEdgeLine:
     edges closer together than irq_thread merge (two: one F or one R; three: one event). An event is readable from
     its thread run. Disarming runs a pending thread first (free_irq waits for it).
 
+    The pull-up trigger (decision D9). The line stays armed with the pull-down; pull_up() raises it weakly and the
+    next arm() (pull-down) lowers it: that fall triggers the module, unless pull_trigger is False. The host's pull
+    pulses are part of the line's waveform, so the kernel sees our own trigger edges too (and merges them like any
+    others). Each bias switch takes pull_s, and takes effect pull_at into the call.
+
     Knobs: arm_latency (seconds, or a list used one per arm()); arm_at (fraction of arm() after which edges are
     seen; the line stops being driven dir_s into the call, as the kernel sets the direction before it requests the
     interrupt); irq_thread; rise_late, fall_late (hard-IRQ entry latency); drop_next
@@ -240,6 +245,9 @@ class FakeEdgeLine:
         self.arm_latency = 0.00013
         self.arm_at = 1.0
         self.dir_s = 0.00002
+        self.pull_s = 0.00004
+        self.pull_at = 0.5
+        self.pull_trigger = True
         self.irq_thread = 0.0
         self.rise_late = self.fall_late = 0.0
         self.drop_next = 0
@@ -252,6 +260,8 @@ class FakeEdgeLine:
         self.pings = self.contention = self.arms = 0
         self.closed = False
         self._pulses: list[tuple[float, float]] = []    # the module's output: absolute (rise, fall)
+        self._host: list[tuple[float, float]] = []      # our pull-up trigger pulses
+        self._host_up: float | None = None              # pulled up since (the trigger's rise), not yet down
         self._busy_from = self._busy_until = 0.0        # the last long cycle (for tests)
         self._armed_from: float | None = None
         self._done: list = []                           # events of closed armed intervals: (run, stamp, rising)
@@ -266,15 +276,29 @@ class FakeEdgeLine:
     def _module_high(self, t: float) -> bool:
         return any(r <= t < f for r, f in self._pulses)
 
+    def _wave(self) -> list:
+        """The line's high intervals: the module's pulses OR our pull-ups, merged."""
+        iv = sorted(self._pulses + self._host + ([(self._host_up, float("inf"))] if self._host_up is not None else []))
+        out: list = []
+        for r, f in iv:
+            if out and r <= out[-1][1]:
+                out[-1] = (out[-1][0], max(out[-1][1], f))
+            else:
+                out.append((r, f))
+        return out
+
+    def _line_high(self, t: float) -> bool:
+        return any(r <= t < f for r, f in self._wave())
+
     def _answering(self, t: float) -> bool:
         return any(f > t for _, f in self._pulses)
 
     def _busy(self) -> bool:
         return self.clock.now < self._busy_until
 
-    def _trigger(self) -> None:
+    def _trigger(self, t0: float | None = None) -> None:
         self.pings += 1
-        t0 = self.clock.now
+        t0 = self.clock.now if t0 is None else t0
         if self._answering(t0):
             return                                      # mid-answer: the module ignores the trigger
         entry = self.script.popleft() if self.script else self.default
@@ -303,7 +327,7 @@ class FakeEdgeLine:
         """Thread runs for the edges seen in [start, stop]: (run, stamp, rising). With closed=False, a burst whose
         thread has not run by `stop` is left out."""
         edges = []
-        for r, f in self._pulses:
+        for r, f in self._wave():
             if f < start or r > stop:
                 continue
             for t, rise in ((r, True), (f, False)):
@@ -320,7 +344,7 @@ class FakeEdgeLine:
             j = i
             while j < len(edges) and edges[j] <= run:
                 j += 1
-            out.append((run, edges[j - 1], self._module_high(run)))
+            out.append((run, edges[j - 1], self._line_high(run)))
             i = j
         return out
 
@@ -358,8 +382,24 @@ class FakeEdgeLine:
             self._low_from = self.clock.now
         self.out_value = value
 
+    def pull_up(self) -> None:
+        self._maybe_fail("pull_up")
+        assert self.mode == "armed", "pull_up() on a line that is not armed"
+        self._host_up = self.clock.now + self.pull_s * self.pull_at
+        self.clock.advance(self.pull_s)
+
     def arm(self) -> None:
         self._maybe_fail("arm")
+        if self._host_up is not None:                   # back to the pull-down: the trigger's fall
+            t = self.clock.now + self.pull_s * self.pull_at
+            self._host.append((self._host_up, t))
+            self._host_up = None
+            if self.pull_trigger:
+                self._trigger(t)
+            else:
+                self.pings += 1
+            self.clock.advance(self.pull_s)
+            return
         lat = self.arm_latency.pop(0) if isinstance(self.arm_latency, list) else self.arm_latency
         self.arms += 1
         start = self.clock.now
@@ -382,7 +422,7 @@ class FakeEdgeLine:
         self.clock.advance(self.get_s)
         if self.mode == "output":
             return self.out_value
-        return 1 if self._module_high(self.clock.now) else 0
+        return 1 if self._line_high(self.clock.now) else 0
 
     def wait(self, timeout_s: float) -> bool:
         """Like the real one: True at once when events are readable, else up to timeout rounded up to 1 ms."""

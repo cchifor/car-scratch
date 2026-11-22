@@ -37,7 +37,8 @@ MAX_BODY = MAX_FILE + (1 << 20)
 class Settings:
     port: int = 8080
     hardware: str = "auto"                 # auto | real | dryrun | sim | none
-    us_timing: str = "auto"                # auto | edges | poll: how the real/dry-run backend times echoes (D9)
+    us_timing: str = "poll"                # poll | edges | auto: how the real/dry-run backend times echoes (D9);
+                                           # polling until the edge timing is validated on the car
     www: Optional[Path] = None
     examples: Optional[Path] = None
     source: Optional[Path] = None

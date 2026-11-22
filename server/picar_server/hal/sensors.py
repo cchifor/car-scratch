@@ -235,18 +235,11 @@ class SensorHub:
         near = not self._last_far and (self._last_cm is None or self._last_cm < self.near_hint_cm)
         v = self.us.measure(3 if (forward or near) else 1)
         self._log_discards()
-        if getattr(self.us, "broken", False) and self._us_fallback is not None:
-            log.error("ultrasonic: edge timing keeps breaking the module's measured limits; timing by polling")
-            try:
-                self.us.close()
-            except Exception:                          # noqa: BLE001
-                pass
-            self.us = self._us_fallback()
-            self._us_fallback = None
         self.echo_cm = self.us.echo_cm
         self.echo_t = self.us.batch_t
         self.dist_t = None if v is None or v is BUSY else self.us.meas_t
         self.clear_t = self.us.clear_t if self.us.echo_cm is None else None   # any echo heard cancels "nothing there"
+        self._maybe_fall_back()
         if v is BUSY:
             # The module's long no-echo cycle: it answered the trigger and heard nothing (facing open space this is
             # its usual answer: 59-75 % of pings, measured). No reading this sample, but not a fault: it neither
@@ -266,6 +259,20 @@ class SensorHub:
         self._last_cm, self._last_far = v, False
         return v, DIST_OK
 
+    def _maybe_fall_back(self) -> None:
+        """An edge-timed sensor whose module checks keep failing hands over to polling, once its line is free: the
+        polling sensor drives the pin, so never while the module may still be answering."""
+        us = self.us
+        if not getattr(us, "broken", False) or self._us_fallback is None or us._busy_since is not None:
+            return
+        log.error("ultrasonic: the module keeps failing the edge timing's checks; timing echoes by polling")
+        try:
+            us.close()
+        except Exception:                              # noqa: BLE001
+            pass
+        self.us = self._us_fallback()
+        self._us_fallback = None
+
     def _log_discards(self) -> None:
         now = self.clock.monotonic()
         if now - self._discard_log_t < 60.0:
@@ -275,13 +282,13 @@ class SensorHub:
             log.info("ultrasonic: pings discarded in the last %.0f s: %s", now - self._discard_log_t,
                      " ".join(f"{k} {v}" for k, v in sorted(d.items())))
         d.clear()
-        diag, blind = getattr(self.us, "diag", None), getattr(self.us, "blind", None)
-        if blind:
-            b = sorted(blind)
-            log.info("ultrasonic edges: %d pings, blind window us p50 %.0f p99 %.0f max %.0f; %s", len(b),
+        diag, trig = getattr(self.us, "diag", None), getattr(self.us, "trigger_s", None)
+        if trig:
+            b = sorted(trig)
+            log.info("ultrasonic edges: %d triggers, trigger fall call us p50 %.0f p99 %.0f max %.0f; %s", len(b),
                      b[len(b) // 2] * 1e6, b[min(len(b) - 1, int(len(b) * 0.99))] * 1e6, b[-1] * 1e6,
                      " ".join(f"{k} {v}" for k, v in sorted(diag.items())) or "no diagnostics")
-            blind.clear()
+            trig.clear()
             diag.clear()
         self._discard_log_t = now
 

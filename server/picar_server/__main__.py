@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 from aiohttp import web
@@ -30,8 +31,10 @@ def main(argv=None) -> None:
     p.add_argument("--config", type=Path, default=d.config, help="calibration.json directory")
     p.add_argument("--allow-host", action="append", default=[], help="extra accepted Host name (repeatable)")
     p.add_argument("--allow-origin", action="append", default=[], help="extra accepted Origin (repeatable)")
-    p.add_argument("--us-timing", choices=["auto", "edges", "poll"], default="auto",
-                   help="ultrasonic echo timing: kernel edge timestamps, polling, or edges with a polling fallback")
+    p.add_argument("--us-timing", choices=["auto", "edges", "poll"],
+                   default=os.environ.get("CAR_SCRATCH_US_TIMING") or "poll",
+                   help="ultrasonic echo timing: kernel edge timestamps, polling, or edges with a polling fallback "
+                        "(default: $CAR_SCRATCH_US_TIMING, else poll)")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,

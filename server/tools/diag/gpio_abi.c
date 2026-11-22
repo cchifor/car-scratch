@@ -28,9 +28,11 @@ int main(void) {
            (unsigned long)GPIO_V2_GET_LINE_IOCTL, (unsigned long)GPIO_V2_LINE_SET_CONFIG_IOCTL,
            (unsigned long)GPIO_V2_LINE_GET_VALUES_IOCTL, (unsigned long)GPIO_V2_LINE_SET_VALUES_IOCTL,
            (unsigned long)GPIO_V2_GET_LINEINFO_IOCTL, (unsigned long)GPIO_GET_CHIPINFO_IOCTL);
-    printf("flags input=%#llx output=%#llx rising=%#llx falling=%#llx bias_disabled=%#llx\n",
+    printf("flags input=%#llx output=%#llx rising=%#llx falling=%#llx bias_disabled=%#llx pull_up=%#llx "
+           "pull_down=%#llx\n",
            (unsigned long long)GPIO_V2_LINE_FLAG_INPUT, (unsigned long long)GPIO_V2_LINE_FLAG_OUTPUT,
            (unsigned long long)GPIO_V2_LINE_FLAG_EDGE_RISING, (unsigned long long)GPIO_V2_LINE_FLAG_EDGE_FALLING,
-           (unsigned long long)GPIO_V2_LINE_FLAG_BIAS_DISABLED);
+           (unsigned long long)GPIO_V2_LINE_FLAG_BIAS_DISABLED, (unsigned long long)GPIO_V2_LINE_FLAG_BIAS_PULL_UP,
+           (unsigned long long)GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN);
     return 0;
 }

@@ -1,11 +1,9 @@
 """Linux GPIO character device (uAPI v2, kernel >= 5.10): one line with kernel-timestamped edges.
 
-Just what the ultrasonic needs: switch the line between output-low, input, and input with both edges; set and read
-its value; wait for and read edge events. Pure Python (fcntl, os, select, struct), no extra package.
-
-Every call is one ioctl on a buffer built once. Arming edge detection right after the trigger races the echo's
-rise (~383 us later): measured on the car (2026-11-22) a raw SET_CONFIG took 133 us median (p99 261 us), the same
-through python3-libgpiod 203 us (p99 368 us).
+Just what the ultrasonic needs: an input with both edges detected, held low by the internal pull-down, which a
+pull-up raises to trigger the module (the line is never driven: measured on the car 2026-11-22, the module answered
+1000 of 1000 such triggers); read its level; wait for and read edge events. Pure Python (fcntl, os, select,
+struct), no extra package. Every call is one ioctl on a buffer built once.
 
 Event timestamps use the kernel's default event clock (no REALTIME/HTE flag): ktime_get_ns, CLOCK_MONOTONIC, the
 clock behind time.monotonic() on Linux. Layouts and ioctl numbers were checked against linux/gpio.h with
@@ -30,7 +28,9 @@ FLAG_INPUT = 1 << 2
 FLAG_OUTPUT = 1 << 3
 FLAG_EDGE_RISING = 1 << 4
 FLAG_EDGE_FALLING = 1 << 5
-FLAG_BIAS_DISABLED = 1 << 10              # as rpi-lgpio leaves GPIO5 today; set explicitly, never inherited
+FLAG_BIAS_PULL_UP = 1 << 8
+FLAG_BIAS_PULL_DOWN = 1 << 9
+FLAG_BIAS_DISABLED = 1 << 10              # bias is always set explicitly, never inherited
 ATTR_ID_OUTPUT_VALUES = 2
 EVENT_RISING_EDGE = 1
 EVENT_FALLING_EDGE = 2
@@ -145,10 +145,11 @@ class EdgeLine:
     def __init__(self, offset: int, chip: str = "/dev/gpiochip0", consumer: str = "car-scratch",
                  event_buffer_size: int = 64):
         self.offset, self.chip = offset, chip
+        edges = FLAG_INPUT | FLAG_EDGE_RISING | FLAG_EDGE_FALLING
         self._input = line_config(FLAG_INPUT | FLAG_BIAS_DISABLED)
-        self._armed = line_config(FLAG_INPUT | FLAG_BIAS_DISABLED | FLAG_EDGE_RISING | FLAG_EDGE_FALLING)
-        self._output_low = line_config(FLAG_OUTPUT, output_value=0)
-        self._high, self._low, self._read = VALUES.pack(1, 1), VALUES.pack(0, 1), VALUES.pack(0, 1)
+        self._armed = line_config(edges | FLAG_BIAS_PULL_DOWN)
+        self._up = line_config(edges | FLAG_BIAS_PULL_UP)
+        self._read = VALUES.pack(0, 1)
         self.fd: Optional[int] = None
         chip_fd = os.open(chip, os.O_RDWR | os.O_CLOEXEC)
         try:
@@ -166,20 +167,18 @@ class EdgeLine:
             self.fd = None
             raise
 
-    def output_low(self) -> None:
-        """Drive the line low (edge detection off; queued events stay queued)."""
-        fcntl.ioctl(self.fd, SET_CONFIG_IOCTL, self._output_low)
-
     def arm(self) -> None:
-        """Input with both edges, timestamped by the kernel."""
+        """Input with both edges timestamped by the kernel, held low by the pull-down. After pull_up() this is the
+        trigger's falling edge."""
         fcntl.ioctl(self.fd, SET_CONFIG_IOCTL, self._armed)
 
-    def input(self) -> None:
-        """Input, edge detection off."""
-        fcntl.ioctl(self.fd, SET_CONFIG_IOCTL, self._input)
+    def pull_up(self) -> None:
+        """The same with the pull-up: raises an idle line weakly (the trigger's rise; never a drive)."""
+        fcntl.ioctl(self.fd, SET_CONFIG_IOCTL, self._up)
 
-    def set(self, value: int) -> None:
-        fcntl.ioctl(self.fd, SET_VALUES_IOCTL, self._high if value else self._low)
+    def input(self) -> None:
+        """Input, edge detection off, no bias (as when released)."""
+        fcntl.ioctl(self.fd, SET_CONFIG_IOCTL, self._input)
 
     def get(self) -> int:
         buf = bytearray(self._read)
@@ -211,7 +210,7 @@ class EdgeLine:
         return out
 
     def close(self) -> None:
-        """Leave the line an input (never driven), then release it. Idempotent."""
+        """Leave the line a plain input, then release it. Idempotent."""
         if self.fd is None:
             return
         try:

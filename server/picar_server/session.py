@@ -32,6 +32,8 @@ class Lease:
     expires: float
 
 
+STOP_CLOSE_S = 0.5                         # shutdown: all sockets together get this long to close
+
 class Hub:
     """Shared state of one server: the shared car, its controller session, the lease and all sessions."""
 
@@ -59,16 +61,22 @@ class Hub:
         self._tel_task = asyncio.get_running_loop().create_task(self._tel_loop())
 
     async def stop(self) -> None:
-        """Idempotent: shutdown and cleanup both call it."""
+        """Idempotent: shutdown and cleanup both call it. Closes every socket at once and gives them
+        STOP_CLOSE_S in all: an unresponsive peer must not hold the server past systemd's stop timeout."""
         self.power.stop()
         if self._tel_task:
             self._tel_task.cancel()
+        closing = []
         for s in list(self.sessions.values()):
             s.dispose_sim()
-            try:
-                await s.ws.close(code=1001)
-            except Exception:
-                pass
+            closing.append(asyncio.ensure_future(s.ws.close(code=1001)))
+        if closing:
+            done, pending = await asyncio.wait(closing, timeout=STOP_CLOSE_S)
+            for t in pending:
+                t.cancel()
+            for t in done:
+                if not t.cancelled():
+                    t.exception()                      # retrieved: a failed close is not reported as unhandled
 
     def new_session_id(self) -> str:
         return f"s{next(self._ids)}"
